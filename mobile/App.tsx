@@ -252,7 +252,9 @@ function HomeScreen(props: {
     try {
       const server = jitsi.trim() ? cleanUrl(jitsi) : undefined;
       const res = await api.call(to, server);
-      if (server) await props.onRemember(server);
+      // Remember the server for next time, or forget it when the field was
+      // emptied: blank means the signaling server's default (ours).
+      await props.onRemember(server ?? '');
       setStatus('');
       onJoin({
         jitsiUrl: res.jitsiUrl,
