@@ -21,6 +21,8 @@ import {
 } from 'react-native';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import { getBuildNumber, getVersion } from 'react-native-device-info';
+import Clipboard from '@react-native-clipboard/clipboard';
+import { dump } from './src/logs';
 import { JitsiMeeting, JitsiRefProps } from '@jitsi/react-native-sdk';
 
 import { Api, Contact, Invite, Me } from './src/api';
@@ -369,6 +371,10 @@ function CallScreen({ meeting, onEnd }: { meeting: Meeting; onEnd: () => void })
     finish(meeting.callUUID);
     onEnd();
   }, [meeting.callUUID, onEnd]);
+  useEffect(() => {
+    console.log(`[quple] call screen: ${meeting.outgoing ? 'outgoing' : 'incoming'} ${meeting.jitsiUrl} ${meeting.meetingId}`);
+  }, [meeting]);
+  const trace = (name: string) => (e?: unknown) => console.log(`[quple] jitsi ${name}`, e ?? '');
   // Hung up from iOS's call screen or the lock screen: leave the meeting.
   useEffect(() => {
     onHangUp(meeting.callUUID, () => {
@@ -394,11 +400,21 @@ function CallScreen({ meeting, onEnd }: { meeting: Meeting; onEnd: () => void })
           'pip.enabled': true,
         }}
         eventListeners={{
-          onConferenceJoined: () => {
+          onConferenceWillJoin: trace('conference will join'),
+          onConferenceJoined: (e: unknown) => {
+            trace('conference joined')(e);
             if (meeting.outgoing) connected(meeting.callUUID);
           },
-          onReadyToClose: end,
-          onConferenceLeft: end,
+          onReadyToClose: (e: unknown) => {
+            trace('ready to close')(e);
+            end();
+          },
+          onConferenceLeft: (e: unknown) => {
+            trace('conference left')(e);
+            end();
+          },
+          onParticipantJoined: trace('participant joined'),
+          onParticipantLeft: trace('participant left'),
         }}
         style={{ flex: 1 }}
       />
@@ -453,6 +469,7 @@ function SettingsScreen(props: {
   const { c, settings } = props;
   const [identityUrl, setIdentityUrl] = useState(settings.identityUrl);
   const [serverUrl, setServerUrl] = useState(settings.serverUrl);
+  const [copied, setCopied] = useState(false);
   return (
     <View style={{ padding: 16 }}>
       <Text style={[styles.title, { color: c.text, marginBottom: 16 }]}>Settings</Text>
@@ -489,7 +506,16 @@ function SettingsScreen(props: {
           <Text style={[styles.link, { color: c.error }]}>Sign out</Text>
         </Pressable>
       ) : null}
-      <Text style={[styles.muted, { color: c.muted, marginTop: 32 }]}>
+      <Pressable
+        onPress={() => {
+          Clipboard.setString(`Quple ${getVersion()} (build ${getBuildNumber()})\n${dump()}`);
+          setCopied(true);
+        }}
+        style={{ marginTop: 32 }}
+      >
+        <Text style={[styles.link, { color: c.accent }]}>{copied ? 'Copied' : 'Copy debug log'}</Text>
+      </Pressable>
+      <Text style={[styles.muted, { color: c.muted, marginTop: 16 }]}>
         Quple {getVersion()} (build {getBuildNumber()})
       </Text>
     </View>
