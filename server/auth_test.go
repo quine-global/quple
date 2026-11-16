@@ -69,7 +69,7 @@ func (kc *fakeKeycloak) token(t *testing.T, overrides map[string]any) string {
 		"exp":                now.Add(5 * time.Minute).Unix(),
 		"iat":                now.Unix(),
 		"jti":                "abc",
-		"preferred_username": "Alice@Example.com",
+		"preferred_username": "Alice",
 	}
 	for k, v := range overrides {
 		if v == nil {
@@ -91,7 +91,7 @@ func TestVerifierKeycloakTokens(t *testing.T) {
 	ctx := context.Background()
 
 	name, err := v.Verify(ctx, kc.token(t, nil))
-	if err != nil || name != "alice@example.com" {
+	if err != nil || name != "alice" {
 		t.Fatalf("access token: %q, %v", name, err)
 	}
 
@@ -106,7 +106,7 @@ func TestVerifierKeycloakTokens(t *testing.T) {
 		{"another issuer", map[string]any{"iss": "https://evil.example/realms/public"}},
 		{"expired", map[string]any{"exp": time.Now().Add(-time.Minute).Unix()}},
 		{"no username", map[string]any{"preferred_username": nil}},
-		{"username not an email", map[string]any{"preferred_username": "service-account-x"}},
+		{"malformed username", map[string]any{"preferred_username": "alice@example.com"}},
 	} {
 		if name, err := v.Verify(ctx, kc.token(t, tc.overrides)); err == nil {
 			t.Errorf("%s: accepted as %q", tc.why, name)

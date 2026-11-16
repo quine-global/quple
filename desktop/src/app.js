@@ -231,7 +231,7 @@ function SignIn({ config, initialError, onConfig, onSignedIn }) {
       <div class="card">
         <h1>Welcome to Quple</h1>
         <p class="muted">
-          Sign in with your Quine account. People call you by the email address you sign in with.
+          Sign in with your Quine account. Your Quine username is what people call you by.
         </p>
         ${error && html`<p class="error">${error}</p>`}
         ${waiting
@@ -384,7 +384,7 @@ function Dashboard({ me, api, jitsiBase, jitsiSignedIn, onJitsiBase, onSettings 
             id="call-target"
             autocomplete="off"
             spellcheck=${false}
-            type="email" placeholder="Their Quine email address"
+            placeholder="Quine username"
             required
             value=${target}
             onInput=${(e) => setTarget(e.currentTarget.value)}
@@ -433,7 +433,7 @@ function Dashboard({ me, api, jitsiBase, jitsiSignedIn, onJitsiBase, onSettings 
           ${contacts === null
             ? html`<li class="empty">Loading…</li>`
             : contacts.length === 0
-              ? html`<li class="empty">No contacts yet. Add someone by their email address above.</li>`
+              ? html`<li class="empty">No contacts yet. Add someone by their username above.</li>`
               : contacts.map(
                   (c) => html`
                     <li class="user-row" key=${c.username}>

@@ -58,8 +58,8 @@ func (v *Verifier) get(ctx context.Context) (*oidc.IDTokenVerifier, error) {
 	return v.verifier, nil
 }
 
-// Verify checks an access token and returns the username it was issued to:
-// the account's email address, which is its username in the realm.
+// Verify checks an access token and returns the username it was issued to
+// (`preferred_username`).
 func (v *Verifier) Verify(ctx context.Context, token string) (string, error) {
 	verifier, err := v.get(ctx)
 	if err != nil {

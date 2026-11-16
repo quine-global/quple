@@ -2,7 +2,7 @@
 // (meet.quineglobal.com).
 //
 // Everyone signs in with Quine (login.quineglobal.com), the one identity
-// server, and is known by their Quine username (their email address). Signed-in clients announce
+// server, and is known by their Quine username. Signed-in clients announce
 // themselves, keep a contact list, place calls, and poll for calls placed to
 // them. A call names the Jitsi Meet server it happens on - any one, picked by
 // the caller - and this server just tells the callee where to go. The meeting

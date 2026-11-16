@@ -13,7 +13,7 @@ other and agree on a meeting room.
    [login.quineglobal.com](https://login.quineglobal.com), Quine's Keycloak
    (the realm `public`, where anyone can sign up; Quple is its OIDC client
    `quple`). The app opens the sign-in page in the system browser. Your
-   Quine username is your email address, and it's what people call you by.
+   Quine username is what people call you by.
    **Contacts** are kept per person on the signaling server.
 2. **Presence.** While the app is open, it polls the signaling server every
    few seconds, which doubles as "I'm online" and "did anyone call me?".
@@ -95,7 +95,8 @@ Nothing to run: Quple uses login.quineglobal.com
 set up by petersweb-infra (`nixos/keycloak/public-realm.nix`, docs/LOGIN.md).
 Self-hosting later means any OIDC provider with a public client `quple`
 that allows PKCE and a `http://127.0.0.1/callback` redirect on any port,
-issues `preferred_username` as an email address, and offers
+issues `preferred_username` as a username like login.quineglobal.com's
+(3-32 of a-z, 0-9, `.`, `_`, `-`), and offers
 `offline_access`; Keycloak does all of that.
 
 ### 2. Signaling server
@@ -172,16 +173,16 @@ cargo tauri build
 ## Server API
 
 All endpoints require `Authorization: Bearer <Quine access token>`; the
-caller's username is the token's `preferred_username`, their email address.
+caller's username is the token's `preferred_username`.
 
 | Method & path                | Body                                   | Returns |
 |-------------------------------|-----------------------------------------|---------|
-| `GET /me`                     | —                                       | `{"username":"alice@example.com","defaultJitsiUrl":"https://meet.jit.si"}` |
+| `GET /me`                     | —                                       | `{"username":"alice","defaultJitsiUrl":"https://meet.jit.si"}` |
 | `POST /register`              | —                                       | `{"ok":true}` — marks you online |
-| `POST /call`                  | `{"to":"bob@example.com","jitsiUrl":"https://meet.jit.si"}` | `{"meetingId":…,"jitsiUrl":…}` — `jitsiUrl` is optional (default `DEFAULT_JITSI`) |
+| `POST /call`                  | `{"to":"bob","jitsiUrl":"https://meet.jit.si"}` | `{"meetingId":…,"jitsiUrl":…}` — `jitsiUrl` is optional (default `DEFAULT_JITSI`) |
 | `GET /poll`                   | —                                       | `{"invites":[{"from":…,"meetingId":…,"jitsiUrl":…,"createdAt":…}]}` — also marks you online, and clears delivered invites |
 | `GET /contacts`               | —                                       | `{"contacts":[{"username":…,"online":true}]}` |
-| `POST /contacts`              | `{"username":"bob@example.com"}`                    | the added contact |
+| `POST /contacts`              | `{"username":"bob"}`                    | the added contact |
 | `DELETE /contacts/{username}` | —                                       | `{"ok":true}` |
 
 Presence expires 90s after the last `/register` or `/poll`. Undelivered
