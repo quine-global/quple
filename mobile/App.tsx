@@ -20,6 +20,7 @@ import {
   useColorScheme,
 } from 'react-native';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
+import { getBuildNumber, getVersion } from 'react-native-device-info';
 import { JitsiMeeting, JitsiRefProps } from '@jitsi/react-native-sdk';
 
 import { Api, Contact, Invite, Me } from './src/api';
@@ -486,6 +487,9 @@ function SettingsScreen(props: {
           <Text style={[styles.link, { color: c.error }]}>Sign out</Text>
         </Pressable>
       ) : null}
+      <Text style={[styles.muted, { color: c.muted, marginTop: 32 }]}>
+        Quple {getVersion()} (build {getBuildNumber()})
+      </Text>
     </View>
   );
 }
