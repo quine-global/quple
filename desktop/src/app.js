@@ -8,7 +8,7 @@ const { listen } = window.__TAURI__.event;
 
 const DEFAULTS = {
   serverUrl: "https://meet.quineglobal.com",
-  identityUrl: "https://identity.quineglobal.com",
+  identityUrl: "https://login.quineglobal.com/realms/public",
   jitsiBase: "https://meet.jit.si",
 };
 
@@ -231,7 +231,7 @@ function SignIn({ config, initialError, onConfig, onSignedIn }) {
       <div class="card">
         <h1>Welcome to Quple</h1>
         <p class="muted">
-          Sign in with your Quine account. Your Quine username is what people call you by.
+          Sign in with your Quine account. People call you by the email address you sign in with.
         </p>
         ${error && html`<p class="error">${error}</p>`}
         ${waiting
@@ -268,7 +268,7 @@ function ServerFields({ config, submitLabel, onSubmit, onCancel }) {
 
   return html`
     <form onSubmit=${submit}>
-      <label for="identity-url">Quine identity server URL</label>
+      <label for="identity-url">Quine sign-in server (OIDC issuer) URL</label>
       <input id="identity-url" ...${bind("identityUrl")} />
       <label for="server-url">Signaling server URL</label>
       <input id="server-url" ...${bind("serverUrl")} />
@@ -384,7 +384,7 @@ function Dashboard({ me, api, jitsiBase, jitsiSignedIn, onJitsiBase, onSettings 
             id="call-target"
             autocomplete="off"
             spellcheck=${false}
-            placeholder="Quine username"
+            type="email" placeholder="Their Quine email address"
             required
             value=${target}
             onInput=${(e) => setTarget(e.currentTarget.value)}
@@ -433,7 +433,7 @@ function Dashboard({ me, api, jitsiBase, jitsiSignedIn, onJitsiBase, onSettings 
           ${contacts === null
             ? html`<li class="empty">Loading…</li>`
             : contacts.length === 0
-              ? html`<li class="empty">No contacts yet. Add someone by their username above.</li>`
+              ? html`<li class="empty">No contacts yet. Add someone by their email address above.</li>`
               : contacts.map(
                   (c) => html`
                     <li class="user-row" key=${c.username}>

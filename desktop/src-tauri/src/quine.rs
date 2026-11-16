@@ -1,4 +1,4 @@
-//! Quine sign-in (identity.quineglobal.com), as an OpenID Connect native app
+//! Quine sign-in (login.quineglobal.com), as an OpenID Connect native app
 //! per RFC 8252: the sign-in page opens in the system browser (where Google
 //! and GitHub logins are allowed and saved passwords work), and comes back to
 //! a one-shot HTTP listener on a loopback port. The authorization code is

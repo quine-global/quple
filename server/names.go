@@ -7,15 +7,17 @@ import (
 	"strings"
 )
 
-// usernamePattern matches the identity server's: usernames are what people
-// type to call each other, and they end up in URLs and meeting display names.
-var usernamePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,31}$`)
+// usernamePattern: a Quine username is the account's email address (the
+// realm signs people up with the email as the username). It's what people
+// type to call each other, and it ends up in URLs and meeting display names,
+// so nothing beyond a plain address gets through.
+var usernamePattern = regexp.MustCompile(`^[a-z0-9._%+-]+@[a-z0-9-]+(\.[a-z0-9-]+)*\.[a-z]{2,}$`)
 
 // normalizeUsername lowercases s and checks it's a well-formed Quine username.
 func normalizeUsername(s string) (string, error) {
 	s = strings.ToLower(strings.TrimSpace(s))
-	if !usernamePattern.MatchString(s) {
-		return "", errors.New("a username is 1-32 chars of a-z, 0-9, '.', '_' or '-', starting with a letter or digit")
+	if len(s) > 254 || !usernamePattern.MatchString(s) {
+		return "", errors.New("a Quine username is the account's email address, like alex@example.com")
 	}
 	return s, nil
 }

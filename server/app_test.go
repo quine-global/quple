@@ -70,21 +70,21 @@ func TestAuth(t *testing.T) {
 	if status, _ := do(t, srv, "bad", "GET", "/me", ""); status != 401 {
 		t.Errorf("bad token: %d", status)
 	}
-	status, me := do(t, srv, "alice", "GET", "/me", "")
-	if status != 200 || me["username"] != "alice" || me["defaultJitsiUrl"] != "https://meet.jit.si" {
+	status, me := do(t, srv, "alice@example.com", "GET", "/me", "")
+	if status != 200 || me["username"] != "alice@example.com" || me["defaultJitsiUrl"] != "https://meet.jit.si" {
 		t.Errorf("/me: %d %v", status, me)
 	}
 }
 
 func TestCallOnDefaultServer(t *testing.T) {
 	srv := newTestApp(t)
-	status, call := do(t, srv, "alice", "POST", "/call", `{"to":"Bob"}`)
+	status, call := do(t, srv, "alice@example.com", "POST", "/call", `{"to":"Bob@example.com"}`)
 	if status != 200 || call["jitsiUrl"] != "https://meet.jit.si" || call["meetingId"] == "" {
 		t.Fatalf("call: %d %v", status, call)
 	}
-	_, poll := do(t, srv, "bob", "GET", "/poll", "")
+	_, poll := do(t, srv, "bob@example.com", "GET", "/poll", "")
 	inv := poll["invites"].([]any)[0].(map[string]any)
-	if inv["from"] != "alice" || inv["jitsiUrl"] != "https://meet.jit.si" || inv["meetingId"] != call["meetingId"] {
+	if inv["from"] != "alice@example.com" || inv["jitsiUrl"] != "https://meet.jit.si" || inv["meetingId"] != call["meetingId"] {
 		t.Fatalf("invite: %v", inv)
 	}
 }
@@ -92,11 +92,11 @@ func TestCallOnDefaultServer(t *testing.T) {
 func TestCallOnAnotherServer(t *testing.T) {
 	srv := newTestApp(t)
 	// The caller picks any Jitsi; the callee is sent to the same one.
-	status, call := do(t, srv, "alice", "POST", "/call", `{"to":"bob","jitsiUrl":"Jitsi.Example.org/"}`)
+	status, call := do(t, srv, "alice@example.com", "POST", "/call", `{"to":"bob@example.com","jitsiUrl":"Jitsi.Example.org/"}`)
 	if status != 200 || call["jitsiUrl"] != "https://jitsi.example.org" {
 		t.Fatalf("call: %d %v", status, call)
 	}
-	_, poll := do(t, srv, "bob", "GET", "/poll", "")
+	_, poll := do(t, srv, "bob@example.com", "GET", "/poll", "")
 	inv := poll["invites"].([]any)[0].(map[string]any)
 	if inv["jitsiUrl"] != "https://jitsi.example.org" || inv["meetingId"] != call["meetingId"] {
 		t.Fatalf("invite: %v", inv)
@@ -106,15 +106,15 @@ func TestCallOnAnotherServer(t *testing.T) {
 func TestCallValidation(t *testing.T) {
 	srv := newTestApp(t)
 	for _, tc := range []struct{ body, why string }{
-		{`{"to":"alice"}`, "self"},
+		{`{"to":"alice@example.com"}`, "self"},
 		{`{"to":"not a name"}`, "malformed name"},
-		{`{"to":"bob@example.com"}`, "not a username"},
-		{`{"to":"bob","jitsiUrl":"javascript:alert(1)"}`, "non-http server"},
-		{`{"to":"bob","jitsiUrl":"file:///etc/passwd"}`, "file server"},
-		{`{"to":"bob","jitsiUrl":"https://x.example/?a=b"}`, "query in server"},
-		{`{"to":"bob","jitsiUrl":"https://user@x.example"}`, "credentials in server"},
+		{`{"to":"bob"}`, "not an email address"},
+		{`{"to":"bob@example.com","jitsiUrl":"javascript:alert(1)"}`, "non-http server"},
+		{`{"to":"bob@example.com","jitsiUrl":"file:///etc/passwd"}`, "file server"},
+		{`{"to":"bob@example.com","jitsiUrl":"https://x.example/?a=b"}`, "query in server"},
+		{`{"to":"bob@example.com","jitsiUrl":"https://user@x.example"}`, "credentials in server"},
 	} {
-		if status, _ := do(t, srv, "alice", "POST", "/call", tc.body); status != 400 {
+		if status, _ := do(t, srv, "alice@example.com", "POST", "/call", tc.body); status != 400 {
 			t.Errorf("%s: status %d", tc.why, status)
 		}
 	}
@@ -122,30 +122,30 @@ func TestCallValidation(t *testing.T) {
 
 func TestContacts(t *testing.T) {
 	srv := newTestApp(t)
-	if status, _ := do(t, srv, "alice", "POST", "/contacts", `{"username":"Joe"}`); status != 200 {
+	if status, _ := do(t, srv, "alice@example.com", "POST", "/contacts", `{"username":"Joe@example.com"}`); status != 200 {
 		t.Fatalf("add: %d", status)
 	}
-	do(t, srv, "alice", "POST", "/contacts", `{"username":"bob"}`)
-	if status, _ := do(t, srv, "alice", "POST", "/contacts", `{"username":"alice"}`); status != 400 {
+	do(t, srv, "alice@example.com", "POST", "/contacts", `{"username":"bob@example.com"}`)
+	if status, _ := do(t, srv, "alice@example.com", "POST", "/contacts", `{"username":"alice@example.com"}`); status != 400 {
 		t.Errorf("adding yourself: %d", status)
 	}
-	do(t, srv, "joe", "GET", "/poll", "") // joe comes online
+	do(t, srv, "joe@example.com", "GET", "/poll", "") // joe comes online
 
-	_, list := do(t, srv, "alice", "GET", "/contacts", "")
+	_, list := do(t, srv, "alice@example.com", "GET", "/contacts", "")
 	got, _ := json.Marshal(list["contacts"])
-	want := `[{"online":false,"username":"bob"},{"online":true,"username":"joe"}]`
+	want := `[{"online":false,"username":"bob@example.com"},{"online":true,"username":"joe@example.com"}]`
 	if string(got) != want {
 		t.Fatalf("contacts = %s, want %s", got, want)
 	}
 
-	do(t, srv, "alice", "DELETE", "/contacts/bob", "")
-	_, list = do(t, srv, "alice", "GET", "/contacts", "")
+	do(t, srv, "alice@example.com", "DELETE", "/contacts/bob@example.com", "")
+	_, list = do(t, srv, "alice@example.com", "GET", "/contacts", "")
 	if n := len(list["contacts"].([]any)); n != 1 {
 		t.Fatalf("after delete: %d contacts", n)
 	}
 	// Contact lists are per person.
-	_, other := do(t, srv, "bob", "GET", "/contacts", "")
+	_, other := do(t, srv, "bob@example.com", "GET", "/contacts", "")
 	if n := len(other["contacts"].([]any)); n != 0 {
-		t.Fatalf("bob sees %d of alice's contacts", n)
+		t.Fatalf("bob@example.com sees %d of alice's contacts", n)
 	}
 }

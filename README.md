@@ -9,11 +9,12 @@ other and agree on a meeting room.
 
 ## How it works
 
-1. **Sign in.** Everything is behind a Quine account at the one central
-   identity server, `identity.quineglobal.com` (an OpenID Connect provider in
-   `identity/`). The app opens the sign-in page in the system browser. Your
-   Quine username is what people call you by. **Contacts** are kept per
-   person on the signaling server.
+1. **Sign in.** Everything is behind a Quine account at
+   [login.quineglobal.com](https://login.quineglobal.com), Quine's Keycloak
+   (the realm `public`, where anyone can sign up; Quple is its OIDC client
+   `quple`). The app opens the sign-in page in the system browser. Your
+   Quine username is your email address, and it's what people call you by.
+   **Contacts** are kept per person on the signaling server.
 2. **Presence.** While the app is open, it polls the signaling server every
    few seconds, which doubles as "I'm online" and "did anyone call me?".
 3. **Calling.** You call someone by username, on whichever Jitsi Meet
@@ -29,7 +30,9 @@ other and agree on a meeting room.
    two clients to the same room name.
 
 Every request to the signaling server carries a Quine access token; the
-server takes the caller's username from it, never from the request.
+server takes the caller's username (the token's `preferred_username`) from
+it, never from the request, and only accepts access tokens issued to Quple
+(`typ` Bearer, `azp` quple).
 
 meet.jit.si only starts a meeting once a signed-in user joins, so when the
 chosen server is meet.jit.si the app offers to sign you in to it (once; it's
@@ -61,8 +64,6 @@ room — the same as if they'd both manually opened
 
 ```
 quple/
-├── identity/     # Go: Quine sign-in (identity.quineglobal.com) - an OIDC
-│                 # provider on zitadel/oidc, with GitHub/Google via goth
 ├── server/       # Go: the minimal central signaling service
 ├── desktop/      # Tauri desktop app (the thing each user runs); the UI is
 │                 # Preact + htm, vendored, so there's no frontend build
@@ -87,38 +88,15 @@ server when calling (or make it the signaling server's `DEFAULT_JITSI`).
 
 Requires Go 1.25+.
 
-### 1. Identity server (Quine sign-in)
+### 1. Quine sign-in
 
-```sh
-cd identity
-go run .              # serves issuer https://identity.quineglobal.com on :8081
-```
-
-Environment: `ISSUER` (the public base URL, exactly as clients see it),
-`ADDR`, `DATA_DIR` (default `./data`: the signing key, `accounts.json`, and
-hashed refresh tokens - back it up and keep it private).
-`GITHUB_CLIENT_ID`/`GITHUB_CLIENT_SECRET` and
-`GOOGLE_CLIENT_ID`/`GOOGLE_CLIENT_SECRET` turn on "Continue with GitHub/Google";
-register `$ISSUER/login/github/callback` and `$ISSUER/login/google/callback` as
-the OAuth apps' callback URLs.
-
-Accounts are invite-only, managed with the same binary (it re-reads
-`accounts.json`, so this works while the server runs):
-
-```sh
-go run . adduser alice               # prompts for a password (empty = social sign-in only)
-go run . link alice github octocat   # this GitHub user may sign in as alice
-go run . link alice google a@b.com   # this (verified) Google address may sign in as alice
-go run . list
-go run . passwd alice / unlink alice github / deluser alice
-```
-
-A social link is pinned to the provider's stable user ID on first use, so a
-later rename or recycled login can't take the account over. Deleting an
-account signs it out everywhere within an hour (refresh is refused).
-
-It runs behind TLS termination in production; plain `http://` issuers are
-allowed for local testing only.
+Nothing to run: Quple uses login.quineglobal.com
+(`https://login.quineglobal.com/realms/public`), where the `quple` client is
+set up by petersweb-infra (`nixos/keycloak/public-realm.nix`, docs/LOGIN.md).
+Self-hosting later means any OIDC provider with a public client `quple`
+that allows PKCE and a `http://127.0.0.1/callback` redirect on any port,
+issues `preferred_username` as an email address, and offers
+`offline_access`; Keycloak does all of that.
 
 ### 2. Signaling server
 
@@ -127,9 +105,9 @@ cd server
 go run .              # listens on :8080; set ADDR to change it
 ```
 
-`ISSUER` (default `https://identity.quineglobal.com`) is the identity server
-whose access tokens it accepts and `CLIENT_ID` (default `quple`) the app they
-must be issued to. Every endpoint needs `Authorization: Bearer <access token>`.
+`ISSUER` (default `https://login.quineglobal.com/realms/public`) is the
+identity server whose access tokens it accepts and `CLIENT_ID` (default
+`quple`) the app they must be issued to. Every endpoint needs `Authorization: Bearer <access token>`.
 `DEFAULT_JITSI` (default `https://meet.jit.si`) hosts calls that don't name a
 server, and `DATA_DIR` holds contacts.
 
@@ -138,17 +116,14 @@ resolves to — it's stateless-enough to run as a single small process; restart
 just clears presence and any in-flight invites (contacts are kept in
 `DATA_DIR`).
 
-### Local end-to-end setup
+### Local signaling server
 
 ```sh
-(cd identity && ISSUER=http://127.0.0.1:8081 ADDR=127.0.0.1:8081 go run . &)
-(cd server && ISSUER=http://127.0.0.1:8081 ADDR=127.0.0.1:8090 go run . &)
-(cd identity && go run . adduser alice)
-(cd identity && go run . adduser joe)
+(cd server && ADDR=127.0.0.1:8090 go run .)
 ```
 
-Then in the app's **Advanced settings** set the identity server to
-`http://127.0.0.1:8081` and the signaling server to `http://127.0.0.1:8090`.
+Then in the app's **Advanced settings** set the signaling server to
+`http://127.0.0.1:8090`. It still signs in at login.quineglobal.com.
 
 ### 3. Desktop app
 
@@ -183,16 +158,11 @@ cargo tauri build
 
 ## Verification status
 
-- **`identity/`**: `go vet`-clean, with end-to-end tests over real HTTP
-  (`go test ./...`): password sign-in through the zitadel provider, PKCE and
-  single-use codes, refresh-token rotation and revocation, refusal after an
-  account is deleted, unregistered redirect URIs refused, social links pinned
-  to the provider's user ID, and tokens verified with `coreos/go-oidc` the
-  way the signaling server does it. The GitHub/Google round trip itself
-  (goth) has **not** been exercised: it needs real OAuth app credentials.
 - **`server/`**: `go vet`-clean, with HTTP-level tests for auth, calls on
   the default and a caller-chosen Jitsi server (and refusal of non-http(s)
-  or otherwise odd server URLs), and contacts.
+  or otherwise odd server URLs), and contacts; the token check against a
+  fake Keycloak-shaped issuer (ID, refresh and other apps' tokens, other
+  issuers, expired tokens and other keys are refused).
 - **`desktop/`**: builds with `cargo build` on macOS and runs. The Preact UI
   (Quine sign-in, contacts, picking the server for a call, the meet.jit.si
   sign-in prompt, incoming calls showing their server) is checked headlessly
@@ -202,16 +172,16 @@ cargo tauri build
 ## Server API
 
 All endpoints require `Authorization: Bearer <Quine access token>`; the
-caller's username is the token's subject.
+caller's username is the token's `preferred_username`, their email address.
 
 | Method & path                | Body                                   | Returns |
 |-------------------------------|-----------------------------------------|---------|
-| `GET /me`                     | —                                       | `{"username":"alice","defaultJitsiUrl":"https://meet.jit.si"}` |
+| `GET /me`                     | —                                       | `{"username":"alice@example.com","defaultJitsiUrl":"https://meet.jit.si"}` |
 | `POST /register`              | —                                       | `{"ok":true}` — marks you online |
-| `POST /call`                  | `{"to":"bob","jitsiUrl":"https://meet.jit.si"}` | `{"meetingId":…,"jitsiUrl":…}` — `jitsiUrl` is optional (default `DEFAULT_JITSI`) |
+| `POST /call`                  | `{"to":"bob@example.com","jitsiUrl":"https://meet.jit.si"}` | `{"meetingId":…,"jitsiUrl":…}` — `jitsiUrl` is optional (default `DEFAULT_JITSI`) |
 | `GET /poll`                   | —                                       | `{"invites":[{"from":…,"meetingId":…,"jitsiUrl":…,"createdAt":…}]}` — also marks you online, and clears delivered invites |
 | `GET /contacts`               | —                                       | `{"contacts":[{"username":…,"online":true}]}` |
-| `POST /contacts`              | `{"username":"bob"}`                    | the added contact |
+| `POST /contacts`              | `{"username":"bob@example.com"}`                    | the added contact |
 | `DELETE /contacts/{username}` | —                                       | `{"ok":true}` |
 
 Presence expires 90s after the last `/register` or `/poll`. Undelivered

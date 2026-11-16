@@ -1,8 +1,8 @@
 // Command quple-server is the central rendezvous service for Quple
 // (meet.quineglobal.com).
 //
-// Everyone signs in with Quine (identity.quineglobal.com), the one identity
-// server, and is known by their Quine username. Signed-in clients announce
+// Everyone signs in with Quine (login.quineglobal.com), the one identity
+// server, and is known by their Quine username (their email address). Signed-in clients announce
 // themselves, keep a contact list, place calls, and poll for calls placed to
 // them. A call names the Jitsi Meet server it happens on - any one, picked by
 // the caller - and this server just tells the callee where to go. The meeting
@@ -13,7 +13,7 @@
 //
 //	ADDR           listen address (default :8080)
 //	ISSUER         Quine identity server whose access tokens are accepted
-//	               (default https://identity.quineglobal.com)
+//	               (default https://login.quineglobal.com/realms/public)
 //	CLIENT_ID      app the tokens must be issued to (default quple)
 //	DEFAULT_JITSI  Jitsi Meet server for calls that don't name one (default https://meet.jit.si)
 //	DATA_DIR       contacts (default ./data)
@@ -28,7 +28,7 @@ import (
 
 func main() {
 	addr := envOr("ADDR", ":8080")
-	issuer := envOr("ISSUER", "https://identity.quineglobal.com")
+	issuer := envOr("ISSUER", "https://login.quineglobal.com/realms/public")
 	dataDir := envOr("DATA_DIR", "data")
 	defaultJitsi, err := normalizeJitsiURL(envOr("DEFAULT_JITSI", "https://meet.jit.si"))
 	if err != nil {

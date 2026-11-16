@@ -11,10 +11,11 @@ import (
 	"github.com/coreos/go-oidc/v3/oidc"
 )
 
-// Verifier checks Quine access tokens (JWTs from identity.quineglobal.com)
-// locally with go-oidc. The issuer's discovery document and keys are fetched
-// on first use rather than at startup, so this server can come up even while
-// the identity server is down; go-oidc re-fetches keys when they rotate.
+// Verifier checks Quine access tokens (JWTs from login.quineglobal.com, the
+// Keycloak realm `public`) locally with go-oidc. The issuer's discovery
+// document and keys are fetched on first use rather than at startup, so this
+// server can come up even while the identity server is down; go-oidc
+// re-fetches keys when they rotate.
 type Verifier struct {
 	issuer   string
 	clientID string
@@ -50,13 +51,15 @@ func (v *Verifier) get(ctx context.Context) (*oidc.IDTokenVerifier, error) {
 	if err != nil {
 		return nil, errIdentityUnavailable
 	}
-	// Access tokens are issued with the client ID as their audience, which
-	// go-oidc checks along with issuer, expiry and signature.
-	v.verifier = provider.Verifier(&oidc.Config{ClientID: v.clientID})
+	// Keycloak's access tokens name the app that asked for them in `azp`;
+	// their `aud` is whatever else they're good for (often "account"), so
+	// the app check is ours, in Verify.
+	v.verifier = provider.Verifier(&oidc.Config{SkipClientIDCheck: true})
 	return v.verifier, nil
 }
 
-// Verify checks an access token and returns the username it was issued to.
+// Verify checks an access token and returns the username it was issued to:
+// the account's email address, which is its username in the realm.
 func (v *Verifier) Verify(ctx context.Context, token string) (string, error) {
 	verifier, err := v.get(ctx)
 	if err != nil {
@@ -67,21 +70,22 @@ func (v *Verifier) Verify(ctx context.Context, token string) (string, error) {
 		return "", err
 	}
 	var claims struct {
-		ClientID string `json:"client_id"`
-		JTI      string `json:"jti"`
-		AtHash   string `json:"at_hash"`
-		Nonce    string `json:"nonce"`
+		Type              string `json:"typ"`
+		AuthorizedParty   string `json:"azp"`
+		PreferredUsername string `json:"preferred_username"`
 	}
 	if err := parsed.Claims(&claims); err != nil {
 		return "", err
 	}
-	// The identity server (zitadel/oidc) signs ID and access tokens alike -
-	// same audience, same typ header - so tell them apart by shape: access
-	// tokens have a jti and never the ID-token-only at_hash/nonce. This keeps
-	// an ID token from being accepted as an access token.
-	if claims.ClientID != v.clientID || claims.JTI == "" || claims.AtHash != "" || claims.Nonce != "" {
+	// Keycloak signs ID, access and refresh tokens alike and tells them
+	// apart by `typ`: only an access token ("Bearer") will do, and only one
+	// issued to this app, not to another app of the realm.
+	if claims.Type != "Bearer" || claims.AuthorizedParty != v.clientID {
 		return "", errors.New("not an access token for this app")
 	}
-	// The subject is the Quine username.
-	return parsed.Subject, nil
+	username, err := normalizeUsername(claims.PreferredUsername)
+	if err != nil {
+		return "", errors.New("token has no usable username")
+	}
+	return username, nil
 }

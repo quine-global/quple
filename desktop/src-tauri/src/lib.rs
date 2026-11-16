@@ -29,9 +29,14 @@ fn default_jitsi_base() -> String {
     "https://meet.jit.si".to_string()
 }
 
+/// Quine accounts: Keycloak's realm `public` at login.quineglobal.com.
 fn default_identity_url() -> String {
-    "https://identity.quineglobal.com".to_string()
+    "https://login.quineglobal.com/realms/public".to_string()
 }
+
+/// The identity server Quple used before login.quineglobal.com, which never
+/// went live; a config that still names it gets the current default.
+const RETIRED_IDENTITY_URL: &str = "https://identity.quineglobal.com";
 
 // `#[serde(default = "...")]` only kicks in during deserialization, so a
 // derived `Default` impl would silently give these empty strings instead of
@@ -59,7 +64,14 @@ fn config_path(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
 fn load_config(app: tauri::AppHandle) -> Result<AppConfig, String> {
     let path = config_path(&app)?;
     match fs::read_to_string(&path) {
-        Ok(raw) => serde_json::from_str(&raw).map_err(|e| format!("corrupt config: {e}")),
+        Ok(raw) => {
+            let mut config: AppConfig =
+                serde_json::from_str(&raw).map_err(|e| format!("corrupt config: {e}"))?;
+            if config.identity_url.trim_end_matches('/') == RETIRED_IDENTITY_URL {
+                config.identity_url = default_identity_url();
+            }
+            Ok(config)
+        }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(AppConfig::default()),
         Err(e) => Err(format!("could not read config: {e}")),
     }
