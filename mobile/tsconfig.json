@@ -1,0 +1,11 @@
+{
+  "extends": "@react-native/typescript-config",
+  "compilerOptions": {
+    "types": ["jest"],
+    // The Jitsi SDK's sources don't type-check here; types/ declares its API.
+    "baseUrl": ".",
+    "paths": { "@jitsi/react-native-sdk": ["types/jitsi-react-native-sdk.d.ts"] }
+  },
+  "include": ["**/*.ts", "**/*.tsx"],
+  "exclude": ["**/node_modules", "**/Pods"]
+}

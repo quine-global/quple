@@ -160,6 +160,37 @@ cd desktop/src-tauri
 cargo tauri build
 ```
 
+### 4. iPhone app (`mobile/`)
+
+React Native 0.85 (the version the Jitsi Meet SDK, 13.3, supports), iOS
+only. Same account, contacts and calling as the desktop app; calls happen in
+the Jitsi Meet SDK, and incoming calls ring on iOS's own call screen
+(CallKit).
+
+- **Installed with AltStore**, re-signed with a free Apple ID, so no push
+  notifications: a call only rings **while the app is open** (it polls the
+  signaling server in the foreground, like the desktop app). Ringing when
+  closed needs VoIP push, which needs the paid Apple Developer Program
+  (then TestFlight); `src/callkit.ts` is where it would plug in.
+- Sign-in: `com.quineglobal.quple:/oauth`, registered with the `quple`
+  client (petersweb-infra docs/LOGIN.md). The refresh token is in the
+  iOS Keychain.
+
+Building (on a Mac with Xcode and CocoaPods; our Mac mini has both):
+
+```sh
+cd mobile && npm ci && cd ios && pod install
+xcodebuild -workspace QupleMobile.xcworkspace -scheme QupleMobile \
+  -configuration Release -sdk iphoneos -destination generic/platform=iOS \
+  -derivedDataPath build CODE_SIGNING_ALLOWED=NO build
+mkdir -p ipa/Payload && cp -R build/Build/Products/Release-iphoneos/QupleMobile.app ipa/Payload/
+(cd ipa && zip -qry ../build/Quple.ipa Payload)
+```
+
+Unsigned on purpose: AltStore signs it with your Apple ID when it installs
+it (and again every 7 days). TypeScript: `npx tsc --noEmit` (the Jitsi
+SDK's own sources don't type-check, so `types/` declares its API).
+
 ## Verification status
 
 - **`server/`**: `go vet`-clean, with HTTP-level tests for auth, calls on
@@ -167,6 +198,9 @@ cargo tauri build
   or otherwise odd server URLs), and contacts; the token check against a
   fake Keycloak-shaped issuer (ID, refresh and other apps' tokens, other
   issuers, expired tokens and other keys are refused).
+- **`mobile/`**: type-checks, and builds for iPhone (Release, unsigned)
+  with Xcode 27.2. Not yet run on a phone: sign-in, CallKit ringing and a
+  Jitsi call need a device.
 - **`desktop/`**: builds with `cargo build` on macOS and runs. The Preact UI
   (Quine sign-in, contacts, picking the server for a call, the meet.jit.si
   sign-in prompt, incoming calls showing their server) is checked headlessly
