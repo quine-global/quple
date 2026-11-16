@@ -176,7 +176,14 @@ the Jitsi Meet SDK, and incoming calls ring on iOS's own call screen
   client (petersweb-infra docs/LOGIN.md). The refresh token is in the
   iOS Keychain.
 
-Building (on a Mac with Xcode and CocoaPods; our Mac mini has both):
+**Installing:** in AltStore, Sources → + →
+`https://git.quineglobal.com/quine-global/quple/releases/download/altstore/source.json`,
+then install Quple from it; new builds show up as updates. CI
+(`.forgejo/workflows/ios.yml`, on the Mac runner) builds every push to
+`main` that touches `mobile/` and replaces the `altstore` release's files
+(`.forgejo/altstore-source.py` writes the source).
+
+Building by hand (on a Mac with Xcode and CocoaPods; our Mac mini has both):
 
 ```sh
 cd mobile && npm ci && cd ios && pod install
