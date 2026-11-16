@@ -10,10 +10,11 @@
 # app publishes here too (with a token that can write to this repo), until
 # the source gets a home of its own.
 #
-# In AltStore: Sources → + →
-#   https://git.quineglobal.com/quine-global/quple/releases/download/altstore/source.json
-# (git.quineglobal.com serves public repos' release files from the forge,
-# which is tailnet-only.) New builds then show up as updates.
+# In AltStore: Sources → + → https://packages.quineglobal.com/altstore.json
+# (petersweb-infra's edge.nix serves this release's source.json there; the
+# .ipa and icons download from git.quineglobal.com, which serves public
+# repos' release files from the forge, itself tailnet-only.) New builds
+# then show up as updates.
 #
 # Versions: 1.0.<run number>, build <run number>, so each build is newer.
 name: ios
@@ -38,6 +39,8 @@ jobs:
       VERSION: 1.0.${{ github.run_number }}
       RELEASE_TAG: altstore
       PUBLIC: https://git.quineglobal.com/${{ github.repository }}/releases/download/altstore
+      # The source's own address (what people add in AltStore).
+      SOURCE_URL: https://packages.quineglobal.com/altstore.json
       # This app's files on the release: <APP>-<build>.ipa, <slug>-icon.png.
       APP: Quple
       SLUG: quple
@@ -79,7 +82,7 @@ jobs:
             --listing mobile/altstore.json --ipa "mobile/ios/out/$APP-$BUILD.ipa" \
             --version "$VERSION" --build "$BUILD" \
             --download-url "$PUBLIC/$APP-$BUILD.ipa" --icon-url "$PUBLIC/$SLUG-icon.png" \
-            --source-url "$PUBLIC/source.json" --notes "Build $BUILD (commit ${GITHUB_SHA::7})." \
+            --source-url "$SOURCE_URL" --notes "Build $BUILD (commit ${GITHUB_SHA::7})." \
             > mobile/ios/out/source.json
           cat mobile/ios/out/source.json
 
@@ -95,7 +98,7 @@ jobs:
           release=$(curl -sS "${auth[@]}" "$API/releases/tags/$RELEASE_TAG")
           id=$(echo "$release" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("id") or "")')
           about="{\"name\": \"Quine apps for iPhone (AltStore source)\",
-                  \"body\": \"Quine's AltStore source: each iPhone app's latest build. In AltStore: Sources → + → $PUBLIC/source.json\"}"
+                  \"body\": \"Quine's AltStore source: each iPhone app's latest build. In AltStore: Sources → + → $SOURCE_URL\"}"
           if [ -z "$id" ]; then
             id=$(curl -fsS "${auth[@]}" -H 'Content-Type: application/json' -X POST "$API/releases" \
               -d "$(echo "$about" | python3 -c 'import json,sys,os; d=json.load(sys.stdin); d.update(tag_name=os.environ["RELEASE_TAG"], target_commitish=os.environ["GITHUB_SHA"]); print(json.dumps(d))')" \
@@ -122,4 +125,4 @@ jobs:
               -F "attachment=@mobile/ios/out/$f"
             echo "uploaded $f"
           done
-          echo "AltStore source: $PUBLIC/source.json"
+          echo "AltStore source: $SOURCE_URL"

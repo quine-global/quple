@@ -177,7 +177,7 @@ the Jitsi Meet SDK, and incoming calls ring on iOS's own call screen
   iOS Keychain.
 
 **Installing:** in AltStore, Sources → + →
-`https://git.quineglobal.com/quine-global/quple/releases/download/altstore/source.json`,
+`https://packages.quineglobal.com/altstore.json`,
 then install Quple from it; new builds show up as updates. It's Quine's
 source, for all our iPhone apps (Quple is the first). CI
 (`.forgejo/workflows/ios.yml`, on the Mac runner) builds every push to
