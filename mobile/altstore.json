@@ -1,0 +1,8 @@
+{
+  "name": "Quple",
+  "developerName": "Quine",
+  "subtitle": "Call people by username",
+  "localizedDescription": "Call people by their Quine username, on Jitsi Meet. Calls ring on the iPhone's own call screen while Quple is open.",
+  "category": "social",
+  "tintColor": "#3A78F2"
+}

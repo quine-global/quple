@@ -178,10 +178,13 @@ the Jitsi Meet SDK, and incoming calls ring on iOS's own call screen
 
 **Installing:** in AltStore, Sources → + →
 `https://git.quineglobal.com/quine-global/quple/releases/download/altstore/source.json`,
-then install Quple from it; new builds show up as updates. CI
+then install Quple from it; new builds show up as updates. It's Quine's
+source, for all our iPhone apps (Quple is the first). CI
 (`.forgejo/workflows/ios.yml`, on the Mac runner) builds every push to
-`main` that touches `mobile/` and replaces the `altstore` release's files
-(`.forgejo/altstore-source.py` writes the source).
+`main` that touches `mobile/`, uploads the build to this repo's `altstore`
+release, and replaces Quple's entry in the source
+(`.forgejo/altstore-source.py`; the listing is `mobile/altstore.json`),
+leaving other apps' alone.
 
 Building by hand (on a Mac with Xcode and CocoaPods; our Mac mini has both):
 
