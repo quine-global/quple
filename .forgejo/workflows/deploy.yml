@@ -1,0 +1,45 @@
+# Deploys quple-server (server/), the signaling service at
+# meet.quineglobal.com, like our other services: on every push to main that
+# touches server/, test it, build its image natively for arm64 (the forge
+# VM, where it runs, is arm64), push it to the forge's registry, and open a
+# petersweb-infra PR that pins it in nixos/quple/default.nix
+# (quine-global/site-image). Merging that PR deploys it.
+#
+# Secrets (organization-level): REGISTRY_USERNAME / REGISTRY_PASSWORD
+# (package write), INFRA_TOKEN (pushes a branch to petersweb-infra and opens
+# the PR).
+name: deploy
+
+on:
+  push:
+    branches: [main]
+    paths: ['server/**', '.forgejo/workflows/deploy.yml']
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  image:
+    runs-on: runner-arm64-linux
+    steps:
+      - uses: https://forge.in.quineglobal.com/quine-global/mirror-actions-checkout@v4
+
+      - name: Test
+        run: |
+          podman run --rm -v "$PWD/server:/src:Z" -w /src docker.io/library/golang:1.25 \
+            sh -c 'go vet ./... && go test ./...'
+
+      - uses: https://forge.in.quineglobal.com/quine-global/site-image@v1
+        with:
+          image: forge.in.quineglobal.com/quine-global/quple-server
+          infra-file: nixos/quple/default.nix
+          name: quple
+          context: server
+          containerfile: server/Containerfile
+          platform: linux/arm64
+          registry-username: ${{ secrets.REGISTRY_USERNAME }}
+          registry-password: ${{ secrets.REGISTRY_PASSWORD }}
+          infra-token: ${{ secrets.INFRA_TOKEN }}
+          server: https://forge.in.quineglobal.com

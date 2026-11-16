@@ -112,10 +112,13 @@ identity server whose access tokens it accepts and `CLIENT_ID` (default
 `DEFAULT_JITSI` (default `https://meet.jit.si`) hosts calls that don't name a
 server, and `DATA_DIR` holds contacts.
 
-Deploy this wherever `meet.quineglobal.com` (or whatever host name you pick)
-resolves to — it's stateless-enough to run as a single small process; restart
-just clears presence and any in-flight invites (contacts are kept in
-`DATA_DIR`).
+**Deploying** (meet.quineglobal.com) works like our other services: a push
+to `main` that touches `server/` runs `.forgejo/workflows/deploy.yml`, which
+tests it, builds `server/Containerfile` as
+`forge.in.quineglobal.com/quine-global/quple-server` and opens a
+petersweb-infra PR bumping its pinned digest (`nixos/quple/default.nix`).
+Merging the PR deploys it. Restarting clears presence and any in-flight
+invites; contacts are kept in `DATA_DIR`.
 
 ### Local signaling server
 
