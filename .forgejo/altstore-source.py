@@ -13,6 +13,7 @@ that a source declares the permissions an app asks for.
 
 import argparse
 import datetime
+import hashlib
 import json
 import os
 import plistlib
@@ -26,7 +27,7 @@ SOURCE = {
     "subtitle": "Quine's apps for iPhone",
     "description": "Apps from Quine, for iPhone and iPad, installed and updated through AltStore.",
     "website": "https://git.quineglobal.com",
-    "tintColor": "#3A78F2",
+    "tintColor": "3A78F2",
 }
 
 p = argparse.ArgumentParser()
@@ -46,6 +47,21 @@ with zipfile.ZipFile(a.ipa) as z:
     info = plistlib.loads(z.read(plist))
 with open(a.listing) as f:
     listing = json.load(f)
+# AltStore's colors are hex without the '#'.
+if "tintColor" in listing:
+    listing["tintColor"] = listing["tintColor"].lstrip("#")
+with open(a.ipa, "rb") as f:
+    sha256 = hashlib.sha256(f.read()).hexdigest()
+size = os.path.getsize(a.ipa)
+date = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
+notes = a.notes or f"Build {a.build}."
+# Privacy: a list of {name, usageDescription}, name without NS…UsageDescription
+# (NSCameraUsageDescription → Camera), as AltStore's own source has it.
+privacy = [
+    {"name": k[len("NS"):-len("UsageDescription")], "usageDescription": v}
+    for k, v in sorted(info.items())
+    if k.startswith("NS") and k.endswith("UsageDescription")
+]
 
 app = {
     **listing,
@@ -56,17 +72,21 @@ app = {
         {
             "version": a.version,
             "buildVersion": a.build,
-            "date": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
-            "localizedDescription": a.notes or f"Build {a.build}.",
+            "date": date,
+            "localizedDescription": notes,
             "downloadURL": a.download_url,
-            "size": os.path.getsize(a.ipa),
+            "size": size,
+            "sha256": sha256,
             "minOSVersion": info.get("MinimumOSVersion", "15.1"),
         }
     ],
-    "appPermissions": {
-        "entitlements": [],
-        "privacy": {k: v for k, v in info.items() if k.startswith("NS") and k.endswith("UsageDescription")},
-    },
+    # The latest version again, for AltStore before sources had `versions`.
+    "version": a.version,
+    "versionDate": date,
+    "versionDescription": notes,
+    "downloadURL": a.download_url,
+    "size": size,
+    "appPermissions": {"entitlements": [], "privacy": privacy},
 }
 
 apps = []
