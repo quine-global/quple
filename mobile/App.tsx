@@ -20,16 +20,25 @@ import {
   useColorScheme,
 } from 'react-native';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
-import { JitsiMeeting } from '@jitsi/react-native-sdk';
+import { JitsiMeeting, JitsiRefProps } from '@jitsi/react-native-sdk';
 
 import { Api, Contact, Invite, Me } from './src/api';
 import { SignedOut, restore, signIn, signOut } from './src/auth';
-import { ring, setupCallKit } from './src/callkit';
+import { connected, finish, onHangUp, ring, setupCallKit, startOutgoing } from './src/callkit';
 import { POLL_MS } from './src/config';
 import { Settings, cleanUrl, loadSettings, saveSettings } from './src/settings';
 
-/** A call to join: where, and the name to show in it. */
-type Meeting = { jitsiUrl: string; meetingId: string; displayName: string };
+/**
+ * A call to join: where, the name to show in it, and its CallKit call
+ * (callkit.ts), which lasts as long as the meeting.
+ */
+type Meeting = {
+  jitsiUrl: string;
+  meetingId: string;
+  displayName: string;
+  callUUID: string;
+  outgoing: boolean;
+};
 
 export default function App() {
   const dark = useColorScheme() === 'dark';
@@ -186,11 +195,13 @@ function HomeScreen(props: {
       seen.current.add(inv.meetingId);
       ring(
         inv.from,
-        () =>
+        callUUID =>
           onJoin({
             jitsiUrl: inv.jitsiUrl,
             meetingId: inv.meetingId,
             displayName: meRef.current?.username ?? '',
+            callUUID,
+            outgoing: false,
           }),
         () => setStatus(`Missed a call from ${inv.from}`),
       );
@@ -236,13 +247,21 @@ function HomeScreen(props: {
     to = to.trim().toLowerCase();
     if (!to) return;
     setStatus(`Calling ${to}…`);
+    const callUUID = startOutgoing(to);
     try {
       const server = jitsi.trim() ? cleanUrl(jitsi) : undefined;
       const res = await api.call(to, server);
       if (server) await props.onRemember(server);
       setStatus('');
-      onJoin({ jitsiUrl: res.jitsiUrl, meetingId: res.meetingId, displayName: me?.username ?? '' });
+      onJoin({
+        jitsiUrl: res.jitsiUrl,
+        meetingId: res.meetingId,
+        displayName: me?.username ?? '',
+        callUUID,
+        outgoing: true,
+      });
     } catch (e) {
+      finish(callUUID);
       fail(e);
     }
   };
@@ -339,16 +358,26 @@ function HomeScreen(props: {
 // ---- The call: Jitsi Meet SDK -----------------------------------------------
 
 function CallScreen({ meeting, onEnd }: { meeting: Meeting; onEnd: () => void }) {
+  const jitsi = useRef<JitsiRefProps>(null);
   const ended = useRef(false);
   const end = useCallback(() => {
     if (ended.current) return;
     ended.current = true;
+    finish(meeting.callUUID);
     onEnd();
-  }, [onEnd]);
+  }, [meeting.callUUID, onEnd]);
+  // Hung up from iOS's call screen or the lock screen: leave the meeting.
+  useEffect(() => {
+    onHangUp(meeting.callUUID, () => {
+      jitsi.current?.close();
+      end();
+    });
+  }, [meeting.callUUID, end]);
   return (
     <View style={{ flex: 1, backgroundColor: 'black' }}>
       <StatusBar barStyle="light-content" />
       <JitsiMeeting
+        ref={jitsi}
         serverURL={meeting.jitsiUrl}
         room={meeting.meetingId}
         config={{}}
@@ -356,11 +385,18 @@ function CallScreen({ meeting, onEnd }: { meeting: Meeting; onEnd: () => void })
         flags={{
           'welcomepage.enabled': false,
           'prejoinpage.enabled': false,
-          // The SDK's own CallKit integration carries the call (callkit.ts).
-          'call-integration.enabled': true,
+          // Off: Quple's own CallKit call carries it (callkit.ts); with the
+          // SDK's on too, each call showed up twice.
+          'call-integration.enabled': false,
           'pip.enabled': true,
         }}
-        eventListeners={{ onReadyToClose: end, onConferenceLeft: end }}
+        eventListeners={{
+          onConferenceJoined: () => {
+            if (meeting.outgoing) connected(meeting.callUUID);
+          },
+          onReadyToClose: end,
+          onConferenceLeft: end,
+        }}
         style={{ flex: 1 }}
       />
     </View>
