@@ -28,8 +28,10 @@ fn default_server_url() -> String {
     "https://meet.quineglobal.com".to_string()
 }
 
+/// Blank: calls go to the signaling server's default Jitsi (its /me says
+/// which), as on the iPhone.
 fn default_jitsi_base() -> String {
-    "https://meet.jit.si".to_string()
+    String::new()
 }
 
 /// Quine accounts: Keycloak's realm `public` at login.quineglobal.com.

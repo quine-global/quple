@@ -10,8 +10,10 @@ const { listen } = window.__TAURI__.event;
 const DEFAULTS = {
   serverUrl: "https://meet.quineglobal.com",
   identityUrl: "https://login.quineglobal.com/realms/public",
-  jitsiBase: "https://meet.jit.si",
+  // Blank: the signaling server's default Jitsi (/me's defaultJitsiUrl).
+  jitsiBase: "",
 };
+const PUBLIC_JITSI = "https://meet.jit.si";
 
 const POLL_INTERVAL_MS = 3000;
 const CONTACTS_REFRESH_MS = 4000;
@@ -25,7 +27,7 @@ async function loadConfig() {
   return {
     serverUrl: saved.server_url || DEFAULTS.serverUrl,
     identityUrl: saved.identity_url || DEFAULTS.identityUrl,
-    jitsiBase: saved.jitsi_base || DEFAULTS.jitsiBase,
+    jitsiBase: (saved.jitsi_base || DEFAULTS.jitsiBase).trim(),
   };
 }
 
@@ -560,8 +562,10 @@ function Dashboard({ me, api, jitsiBase, jitsiSignedIn, onJitsiBase, onSettings 
         body: JSON.stringify({ to: who, jitsiUrl: server.trim() || me.defaultJitsiUrl }),
       });
       setCall({ meetingId, peer: who, jitsiUrl, outgoing: true, phase: "ringing", startedAt: Date.now() });
-      setServer(jitsiUrl);
-      if (jitsiUrl !== jitsiBase) onJitsiBase(jitsiUrl);
+      // Remember the server as typed for next time; blank stays blank (the
+      // server's default), as on the iPhone.
+      const typed = server.trim();
+      if (typed !== jitsiBase) onJitsiBase(typed);
     } catch (err) {
       setStatus({ text: `Couldn't call ${who}: ${err.message}`, state: "offline" });
     }
@@ -639,7 +643,7 @@ function Dashboard({ me, api, jitsiBase, jitsiSignedIn, onJitsiBase, onSettings 
           onInput=${(e) => setServer(e.currentTarget.value)}
         />
         <datalist id="known-servers">
-          ${[...new Set([me.defaultJitsiUrl, DEFAULTS.jitsiBase, jitsiBase])].map((u) => html`<option value=${u} />`)}
+          ${[...new Set([me.defaultJitsiUrl, PUBLIC_JITSI, jitsiBase].filter(Boolean))].map((u) => html`<option value=${u} />`)}
         </datalist>
         ${isPublicJitsi(server || me.defaultJitsiUrl) &&
         !jitsiSignedIn &&
