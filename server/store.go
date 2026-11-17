@@ -51,7 +51,14 @@ type call struct {
 	// holders is, per party, which of their devices has the call: the first
 	// one to send a heartbeat, until another moves it (MoveCall).
 	holders map[string]*holder
+	// notified: the callee was sent a notification (their app was closed),
+	// so a caller giving up sends a "missed call" one too.
+	notified bool
 }
+
+// recentPollWindow: a user whose app polled (or sent a heartbeat) this
+// recently has Quple open, and it rings by itself; no notification.
+const recentPollWindow = 10 * time.Second
 
 // holder is the device a party's call is on.
 type holder struct {
@@ -125,6 +132,24 @@ func (s *Store) Touch(username string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.lastSeen[username] = time.Now()
+}
+
+// PolledRecently reports whether username's app polled within
+// recentPollWindow: it's open, and rings for calls by itself.
+func (s *Store) PolledRecently(username string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	t, ok := s.lastSeen[username]
+	return ok && time.Since(t) < recentPollWindow
+}
+
+// MarkNotified records that meetingID's callee was sent a notification.
+func (s *Store) MarkNotified(meetingID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if c, ok := s.calls[meetingID]; ok {
+		c.notified = true
+	}
 }
 
 // IsOnline reports whether username was seen within presenceWindow.
@@ -294,19 +319,24 @@ func (c *call) status(peer string, now time.Time) CallStatus {
 }
 
 // HangUp ends meetingID for both sides; the first to hang up is recorded.
-func (s *Store) HangUp(meetingID, me string) error {
+// missedBy is set (to the callee) when this was the caller giving up on a
+// callee who was notified and never answered: they get a "missed call".
+func (s *Store) HangUp(meetingID, me string) (missedBy string, err error) {
 	now := time.Now()
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	c, _, err := s.party(meetingID, me, now)
+	c, peer, err := s.party(meetingID, me, now)
 	if err != nil {
-		return err
+		return "", err
 	}
 	if c.endedBy == "" {
 		c.endedBy = me
+		if _, answered := c.seen[peer]; c.notified && me == c.parties[0] && !answered {
+			missedBy = peer
+		}
 	}
 	c.touched = now
-	return nil
+	return missedBy, nil
 }
 
 // DrainInvites returns and clears every pending invite for username,

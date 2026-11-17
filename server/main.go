@@ -16,7 +16,9 @@
 //	               (default https://login.quineglobal.com/realms/public)
 //	CLIENT_ID      app the tokens must be issued to (default quple)
 //	DEFAULT_JITSI  Jitsi Meet server for calls that don't name one (default https://meet.jit.si)
-//	DATA_DIR       contacts (default ./data)
+//	DATA_DIR       contacts and notification topics (default ./data)
+//	NTFY_URL       ntfy server for call notifications to closed apps (optional)
+//	NTFY_TOKEN     token that may publish to quple_* topics there
 package main
 
 import (
@@ -43,11 +45,21 @@ func main() {
 		log.Fatal(err)
 	}
 
+	topics, err := LoadTopics(filepath.Join(dataDir, "ntfy-topics.json"))
+	if err != nil {
+		log.Fatal(err)
+	}
+
 	app := &App{
 		verifier:        NewVerifier(issuer, envOr("CLIENT_ID", "quple")),
 		store:           NewStore(),
 		contacts:        contacts,
 		defaultJitsiURL: defaultJitsi,
+		topics:          topics,
+		notifier:        NewNotifier(os.Getenv("NTFY_URL"), os.Getenv("NTFY_TOKEN")),
+	}
+	if app.notifier.Enabled() {
+		log.Printf("call notifications through %s", app.notifier.url)
 	}
 	mux := http.NewServeMux()
 	app.Routes(mux)

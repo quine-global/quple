@@ -4,10 +4,17 @@
 import { accessToken } from './auth';
 import { DEVICE_NAME, deviceId } from './device';
 
-export type Me = { username: string; defaultJitsiUrl: string };
+export type Me = {
+  username: string;
+  defaultJitsiUrl: string;
+  /** Where to subscribe (the ntfy app) for calls while Quple is closed; absent if the server has none. */
+  ntfyServer?: string;
+  ntfyTopic?: string;
+};
 export type Contact = { username: string; online: boolean };
 export type Invite = { from: string; meetingId: string; jitsiUrl: string; createdAt: string };
-export type Call = { meetingId: string; jitsiUrl: string };
+/** `notified`: the callee's app was closed, so they got a notification instead. */
+export type Call = { meetingId: string; jitsiUrl: string; notified?: boolean };
 /** A call as one side sees it (the server's /calls/{id}/heartbeat). */
 export type CallStatus = {
   peer: string;

@@ -58,7 +58,21 @@ other and agree on a meeting room.
    (joined, how many others, from Jitsi's `window.APP`) through the page
    title, which the app reads (`desktop/src-tauri/src/lib.rs`). Closing
    that window, or Jitsi's hang-up button, hangs up.
-7. **Moving a call.** Each app has a device ID (kept for good: the iPhone's
+7. **Calls while Quple is closed.** Without VoIP push (a paid Apple
+   account), the iPhone app only rings while it's open. So when a call is
+   placed to someone whose app hasn't polled in the last 10 s, the server
+   also publishes "alice is calling. Open Quple to answer." to their own
+   ntfy topic on ntfy.quineglobal.com (`quple_<random>`, made on first use,
+   kept in `DATA_DIR`; petersweb-infra `docs/NTFY.md`), and "Missed call
+   from alice" if alice gives up first. The ntfy app shows it even when
+   Quple is closed; tapping it opens Quple (`com.quineglobal.quple://call`),
+   which polls and rings as usual. The caller's app waits 100 s instead of
+   60 for such a call (`/call` answers `"notified": true`). The ntfy iPhone
+   app has no subscribe links, so at launch, until you've said you did it,
+   the iPhone app walks you through subscribing (install ntfy, then its
+   topic and server with copy buttons; **Notifications** on the home screen
+   brings it back).
+8. **Moving a call.** Each app has a device ID (kept for good: the iPhone's
    in AsyncStorage, the Mac's in its webview's localStorage), sent with
    every heartbeat. The first device to send one holds your side of the
    call. While it lasts, your other devices see it on their next poll
@@ -153,7 +167,9 @@ go run .              # listens on :8080; set ADDR to change it
 identity server whose access tokens it accepts and `CLIENT_ID` (default
 `quple`) the app they must be issued to. Every endpoint needs `Authorization: Bearer <access token>`.
 `DEFAULT_JITSI` (default `https://meet.jit.si`) hosts calls that don't name a
-server, and `DATA_DIR` holds contacts.
+server, and `DATA_DIR` holds contacts and notification topics. `NTFY_URL` and
+`NTFY_TOKEN` (one that may publish to `quple_*` topics) turn on call
+notifications for closed apps; without them there are none.
 
 **Deploying** (meet.quineglobal.com) works like our other services: a push
 to `main` that touches `server/` runs `.forgejo/workflows/deploy.yml`, which
@@ -301,9 +317,9 @@ caller's username is the token's `preferred_username`.
 
 | Method & path                | Body                                   | Returns |
 |-------------------------------|-----------------------------------------|---------|
-| `GET /me`                     | —                                       | `{"username":"alice","defaultJitsiUrl":"https://meet.jit.si"}` |
+| `GET /me`                     | —                                       | `{"username":"alice","defaultJitsiUrl":"https://meet.jit.si"}`, plus `"ntfyServer"` and `"ntfyTopic"` (yours, made on first use) when the server sends call notifications |
 | `POST /register`              | —                                       | `{"ok":true}` — marks you online |
-| `POST /call`                  | `{"to":"bob","jitsiUrl":"https://meet.jit.si"}` | `{"meetingId":…,"jitsiUrl":…}` — `jitsiUrl` is optional (default `DEFAULT_JITSI`) |
+| `POST /call`                  | `{"to":"bob","jitsiUrl":"https://meet.jit.si"}` | `{"meetingId":…,"jitsiUrl":…,"notified":false}` — `jitsiUrl` is optional (default `DEFAULT_JITSI`); `notified` when the callee's app was closed and they got a notification instead |
 | `GET /poll[?device=…]`        | —                                       | `{"invites":[{"from":…,"meetingId":…,"jitsiUrl":…,"createdAt":…}]}` — also marks you online, and clears delivered invites. With `device`, also `"calls":[{"meetingId":…,"peer":…,"jitsiUrl":…,"device":"iPhone"}]`: your answered calls on your other devices, to move |
 | `GET /calls/{meetingId}`            | —                                 | the same as a heartbeat's answer, without counting as one: for a phone that's ringing (has the caller given up?) |
 | `POST /calls/{meetingId}/heartbeat` | `{"device":"…","name":"iPhone","joined":true}` (optional) | `{"peer":"bob","peerSeenMsAgo":1200,"endedBy":""}` — sent every few seconds from a call screen; `peerSeenMsAgo` is `null` until the other side's call screen opens (not answered; the caller's call screen is up from the start), `endedBy` is who hung up. With a device, also `movedTo`/`movedJoined` when the call is now on another of your devices (see "Moving a call"). Also marks you online. Only the call's two parties: 403 otherwise, 404 for unknown or long-idle calls |

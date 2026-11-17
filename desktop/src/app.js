@@ -1,7 +1,7 @@
 import { h, render } from "preact";
 import { useCallback, useEffect, useRef, useState } from "preact/hooks";
 import htm from "htm";
-import { decide, NO_ANSWER_MS } from "./watchdog.js";
+import { decide, NO_ANSWER_MS, NOTIFIED_NO_ANSWER_MS } from "./watchdog.js";
 
 const html = htm.bind(h);
 const { invoke } = window.__TAURI__.core;
@@ -450,7 +450,7 @@ function Dashboard({ me, api, jitsiBase, jitsiSignedIn, onJitsiBase, onSettings 
           endCall(`${c.peer} didn't answer`, { closeWindow: false });
         } else if (st && st.peerSeenMsAgo !== null) {
           await startInCall(c);
-        } else if (Date.now() - c.startedAt > NO_ANSWER_MS) {
+        } else if (Date.now() - c.startedAt > (c.notified ? NOTIFIED_NO_ANSWER_MS : NO_ANSWER_MS)) {
           endCall(`${c.peer} didn't answer`, { closeWindow: false });
         }
         return;
@@ -557,11 +557,11 @@ function Dashboard({ me, api, jitsiBase, jitsiSignedIn, onJitsiBase, onSettings 
     }
     setNotice("");
     try {
-      const { meetingId, jitsiUrl } = await api("/call", {
+      const { meetingId, jitsiUrl, notified } = await api("/call", {
         method: "POST",
         body: JSON.stringify({ to: who, jitsiUrl: server.trim() || me.defaultJitsiUrl }),
       });
-      setCall({ meetingId, peer: who, jitsiUrl, outgoing: true, phase: "ringing", startedAt: Date.now() });
+      setCall({ meetingId, peer: who, jitsiUrl, outgoing: true, phase: "ringing", startedAt: Date.now(), notified: !!notified });
       // Remember the server as typed for next time; blank stays blank (the
       // server's default), as on the iPhone.
       const typed = server.trim();
@@ -719,6 +719,8 @@ function Dashboard({ me, api, jitsiBase, jitsiSignedIn, onJitsiBase, onSettings 
         <div class="ringing">Calling</div>
         <div class="incoming-from">${active.peer}</div>
         <div class="muted">on ${jitsiHost(active.jitsiUrl)}</div>
+        ${active.notified &&
+        html`<p class="muted">Quple isn't open on their phone, so they got a notification. Waiting for them to open it…</p>`}
         <div class="button-row">
           <button type="button" class="secondary" onClick=${() => endCall("", { closeWindow: false })}>Cancel</button>
         </div>

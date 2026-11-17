@@ -8,6 +8,8 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   AppState,
+  Linking,
+  ScrollView,
   FlatList,
   KeyboardAvoidingView,
   Platform,
@@ -30,7 +32,8 @@ import { SignedOut, restore, signIn, signOut } from './src/auth';
 import { connected, finish, onHangUp, ring, setupCallKit, startOutgoing, stopRinging } from './src/callkit';
 import { POLL_MS } from './src/config';
 import { Settings, cleanUrl, loadSettings, saveSettings } from './src/settings';
-import { NO_ANSWER_MS, decide } from './src/watchdog';
+import { NOTIFIED_NO_ANSWER_MS, NO_ANSWER_MS, decide } from './src/watchdog';
+import { NTFY_APP_STORE_URL, dismissForThisLaunch, dismissedThisLaunch, isSetUp, markSetUp } from './src/notifications';
 
 /**
  * A call to join: where, the name to show in it, and its CallKit call
@@ -49,6 +52,8 @@ type Meeting = {
    * only then does the app join the Jitsi room. Incoming calls start answered.
    */
   answered: boolean;
+  /** The callee's app was closed: they got a notification, and it rings longer. */
+  notified?: boolean;
 };
 
 export default function App() {
@@ -211,6 +216,15 @@ function HomeScreen(props: {
   const [status, setStatus] = useState(props.notice);
   // Your calls on your other devices (the Mac), to move here.
   const [elsewhere, setElsewhere] = useState<ActiveCall[]>([]);
+  // Setting up call notifications (ntfy): asked at launch until done.
+  const [showNotifications, setShowNotifications] = useState(false);
+  useEffect(() => {
+    const topic = me?.ntfyTopic;
+    if (!topic || dismissedThisLaunch()) return;
+    isSetUp(topic).then(done => {
+      if (!done) setShowNotifications(true);
+    });
+  }, [me?.ntfyTopic]);
 
   // Takes a call over from another device: this one joins the room, and
   // the other leaves once it has (README "Moving a call").
@@ -357,6 +371,7 @@ function HomeScreen(props: {
         outgoing: true,
         peer: to,
         answered: false,
+        notified: res.notified,
       });
     } catch (e) {
       finish(callUUID);
@@ -366,6 +381,24 @@ function HomeScreen(props: {
 
   const isContact = (name: string) => (contacts ?? []).some(x => x.username === name);
 
+  if (showNotifications && me?.ntfyServer && me.ntfyTopic) {
+    return (
+      <NotificationsScreen
+        c={c}
+        server={me.ntfyServer}
+        topic={me.ntfyTopic}
+        onDone={async () => {
+          await markSetUp(me.ntfyTopic!);
+          setShowNotifications(false);
+        }}
+        onLater={() => {
+          dismissForThisLaunch();
+          setShowNotifications(false);
+        }}
+      />
+    );
+  }
+
   return (
     <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
       <View style={styles.header}>
@@ -373,9 +406,16 @@ function HomeScreen(props: {
           <Text style={[styles.muted, { color: c.muted }]}>Signed in as</Text>
           <Text style={[styles.title, { color: c.text }]}>{me?.username ?? '…'}</Text>
         </View>
-        <Pressable onPress={props.onSettings} hitSlop={12}>
-          <Text style={[styles.link, { color: c.accent }]}>Settings</Text>
-        </Pressable>
+        <View style={styles.headerLinks}>
+          {me?.ntfyTopic ? (
+            <Pressable onPress={() => setShowNotifications(true)} hitSlop={12}>
+              <Text style={[styles.link, { color: c.accent }]}>Notifications</Text>
+            </Pressable>
+          ) : null}
+          <Pressable onPress={props.onSettings} hitSlop={12}>
+            <Text style={[styles.link, { color: c.accent }]}>Settings</Text>
+          </Pressable>
+        </View>
       </View>
 
       <View style={[styles.card, { backgroundColor: c.card }]}>
@@ -463,6 +503,65 @@ function HomeScreen(props: {
   );
 }
 
+// ---- Call notifications: setting up ntfy ------------------------------------
+
+// Quple only rings while it's open. For calls while it's closed, you
+// subscribe to your own topic in the ntfy app (src/notifications.ts). Its
+// iPhone app has no subscribe links, hence the steps and copy buttons.
+function NotificationsScreen(props: {
+  c: Colors;
+  server: string;
+  topic: string;
+  onDone: () => void;
+  onLater: () => void;
+}) {
+  const { c, server, topic } = props;
+  const [copied, setCopied] = useState('');
+  const copy = (what: string, value: string) => {
+    Clipboard.setString(value);
+    setCopied(what);
+  };
+  const row = (label: string, value: string) => (
+    <View style={[styles.copyRow, { borderColor: c.border }]}>
+      <View style={styles.copyText}>
+        <Text style={[styles.muted, { color: c.muted }]}>{label}</Text>
+        <Text style={[styles.mono, { color: c.text }]} selectable>
+          {value}
+        </Text>
+      </View>
+      <Button c={c} secondary title={copied === label ? 'Copied' : 'Copy'} onPress={() => copy(label, value)} />
+    </View>
+  );
+  return (
+    <ScrollView contentContainerStyle={styles.setup}>
+      <Text style={[styles.title, { color: c.text }]}>Get calls when Quple is closed</Text>
+      <Text style={[styles.body, { color: c.text }]}>
+        Quple can only ring while it's open. For calls when it isn't, subscribe to your own private topic in the free
+        ntfy app: you'll get a notification saying who's calling, and tapping it opens Quple to answer.
+      </Text>
+
+      <Text style={[styles.step, { color: c.text }]}>1. Install ntfy</Text>
+      <Button c={c} title="Get ntfy from the App Store" onPress={() => Linking.openURL(NTFY_APP_STORE_URL)} />
+
+      <Text style={[styles.step, { color: c.text }]}>
+        2. In ntfy, tap +, enter your topic, turn on "Use another server", enter the server, and tap Subscribe
+      </Text>
+      {row('Topic', topic)}
+      {row('Server', server)}
+
+      <Text style={[styles.step, { color: c.text }]}>3. Allow ntfy's notifications when it asks</Text>
+      <Text style={[styles.muted, { color: c.muted }]}>
+        Keep your topic to yourself: anyone who has it can see who calls you.
+      </Text>
+
+      <View style={styles.setupButtons}>
+        <Button c={c} title="I've subscribed" onPress={props.onDone} />
+        <Button c={c} secondary title="Not now" onPress={props.onLater} />
+      </View>
+    </ScrollView>
+  );
+}
+
 // ---- Ringing: an outgoing call, until it's answered ---------------------------
 
 // The caller stays out of the Jitsi room while the other phone rings. Its
@@ -517,7 +616,8 @@ function RingingScreen(props: {
         busy = false;
       }
       // Their phone rang out without telling us (it never got the call).
-      if (!done.current && Date.now() - startedAt.current > NO_ANSWER_MS) stop(`${meeting.peer} didn't answer`);
+      const limit = meeting.notified ? NOTIFIED_NO_ANSWER_MS : NO_ANSWER_MS;
+      if (!done.current && Date.now() - startedAt.current > limit) stop(`${meeting.peer} didn't answer`);
     };
     tick();
     const timer = setInterval(tick, POLL_MS);
@@ -528,6 +628,11 @@ function RingingScreen(props: {
     <View style={styles.center}>
       <Text style={[styles.muted, { color: c.muted }]}>Calling</Text>
       <Text style={[styles.hero, { color: c.text }]}>{meeting.peer}</Text>
+      {meeting.notified ? (
+        <Text style={[styles.muted, styles.centerText, { color: c.muted }]}>
+          Quple isn't open on their phone, so they got a notification. Waiting for them to open it…
+        </Text>
+      ) : null}
       <ActivityIndicator style={styles.ringing} />
       <Button c={c} title="Cancel" onPress={() => stop()} />
     </View>
@@ -881,6 +986,15 @@ const styles = StyleSheet.create({
   remove: { fontSize: 16, paddingHorizontal: 4 },
   center: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: 24 },
   ringing: { marginVertical: 24 },
+  centerText: { textAlign: 'center', marginTop: 8 },
+  headerLinks: { flexDirection: 'row', gap: 16 },
+  setup: { padding: 24, gap: 12 },
+  body: { fontSize: 16, lineHeight: 22 },
+  step: { fontSize: 16, fontWeight: '600', marginTop: 12 },
+  copyRow: { flexDirection: 'row', alignItems: 'center', gap: 12, borderWidth: 1, borderRadius: 10, padding: 10 },
+  copyText: { flex: 1 },
+  mono: { fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace', fontSize: 13 },
+  setupButtons: { gap: 8, marginTop: 16 },
   elsewhere: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12 },
   error: { marginBottom: 16, textAlign: 'center' },
 });

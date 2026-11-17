@@ -48,7 +48,14 @@ type App struct {
 	contacts *Contacts
 	// defaultJitsiURL hosts calls that don't name a server.
 	defaultJitsiURL string
+	// Call notifications for people whose app is closed (ntfy); optional.
+	topics   *Topics
+	notifier *Notifier
 }
+
+// appURL opens Quple on the iPhone (Info.plist's URL scheme): a
+// notification's tap action. Quple then polls and rings as usual.
+const appURL = "com.quineglobal.quple://call"
 
 func (a *App) Routes(mux *http.ServeMux) {
 	mux.HandleFunc("/me", withCORS(a.requireAuth(a.handleMe)))
@@ -98,7 +105,18 @@ func (a *App) handleMe(w http.ResponseWriter, r *http.Request, me string) {
 		writeError(w, http.StatusMethodNotAllowed, "GET only")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"username": me, "defaultJitsiUrl": a.defaultJitsiURL})
+	body := map[string]string{"username": me, "defaultJitsiUrl": a.defaultJitsiURL}
+	// Where to subscribe (the ntfy app) for calls while Quple is closed.
+	if a.notifier.Enabled() {
+		topic, err := a.topics.Get(me)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "could not make a notification topic")
+			return
+		}
+		body["ntfyServer"] = a.notifier.url
+		body["ntfyTopic"] = topic
+	}
+	writeJSON(w, http.StatusOK, body)
 }
 
 // handleRegister announces/refreshes the caller's presence. POST
@@ -162,7 +180,23 @@ func (a *App) handleCall(w http.ResponseWriter, r *http.Request, me string) {
 
 	a.store.Touch(me)
 	inv := a.store.PlaceCall(to, Invite{From: me, MeetingID: newMeetingID(), JitsiURL: jitsiURL})
-	writeJSON(w, http.StatusOK, map[string]string{"meetingId": inv.MeetingID, "jitsiUrl": jitsiURL})
+	// Their app is closed (it hasn't polled lately): a notification, so they
+	// can open it and answer. The caller's app then rings for longer.
+	notified := false
+	if a.notifier.Enabled() && !a.store.PolledRecently(to) {
+		if topic, err := a.topics.Get(to); err == nil {
+			a.notifier.Send(topic, Notification{
+				Title:    "Quple",
+				Message:  me + " is calling. Open Quple to answer.",
+				Click:    appURL,
+				Tags:     "telephone_receiver",
+				Priority: "5",
+			})
+			a.store.MarkNotified(inv.MeetingID)
+			notified = true
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"meetingId": inv.MeetingID, "jitsiUrl": jitsiURL, "notified": notified})
 }
 
 // writeCallError answers for a call the caller can't touch.
@@ -250,9 +284,20 @@ func (a *App) handleHangUp(w http.ResponseWriter, r *http.Request, me string) {
 		writeError(w, http.StatusMethodNotAllowed, "POST only")
 		return
 	}
-	if err := a.store.HangUp(r.PathValue("id"), me); err != nil {
+	missedBy, err := a.store.HangUp(r.PathValue("id"), me)
+	if err != nil {
 		writeCallError(w, err)
 		return
+	}
+	if missedBy != "" {
+		if topic, err := a.topics.Get(missedBy); err == nil {
+			a.notifier.Send(topic, Notification{
+				Title:   "Quple",
+				Message: "Missed call from " + me,
+				Click:   appURL,
+				Tags:    "telephone_receiver",
+			})
+		}
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }

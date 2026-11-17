@@ -15,6 +15,11 @@ import { CallStatus } from './api';
 
 /** The caller gives up when the callee hasn't answered (CallKit rings for 45 s). */
 export const NO_ANSWER_MS = 60_000;
+/**
+ * The same when the callee's app was closed and they got a notification
+ * instead: time to see it, open Quple, and answer (its invite is kept 2 min).
+ */
+export const NOTIFIED_NO_ANSWER_MS = 100_000;
 /** The other side's heartbeats stopped this long ago, and they're not in the room: they're gone. */
 export const PEER_LOST_MS = 45_000;
 /** Not in the Jitsi room this long after (re)joining: start the SDK over. */
