@@ -182,6 +182,40 @@ cd desktop/src-tauri
 cargo tauri build
 ```
 
+#### Updates and releases (macOS)
+
+Like Quintodrome's, the Mac app updates itself with
+[Sparkle](https://sparkle-project.org/) through
+[tauri-plugin-sparkle-updater](https://crates.io/crates/tauri-plugin-sparkle-updater):
+**Quple › Check for Updates…**, a background check at every launch, and
+Sparkle's daily one. Sparkle shows its native "A new version is available"
+window and installs the update itself (`desktop/src-tauri/src/updater.rs`).
+
+- **Building locally:** `bash desktop/scripts/download-sparkle.sh
+  desktop/src-tauri` once (Sparkle.framework and its tools, git-ignored),
+  then `cd desktop && SPARKLE_FRAMEWORK_PATH=$PWD/src-tauri npx
+  @tauri-apps/cli@2 build`. Sparkle only runs in the packaged `.app`, not
+  `cargo run`.
+- **Releasing:** `git tag -a v1.2.3 -m "What's new" && git push origin
+  v1.2.3`. `.forgejo/workflows/desktop.yml` builds both architectures on the
+  Mac runner, publishes the Forgejo release (downloadable through
+  git.quineglobal.com), and writes the Homebrew cask (`brew install --cask
+  quine-global/tap/quple`) and one Sparkle appcast per architecture
+  (`appcasts/quple-<arch>.xml`) into quine-global/homebrew-tap. The tag's
+  message is the release notes, shown in Sparkle's update window.
+- **Signing:** each update zip is signed with an Ed25519 key; the public half
+  is `SUPublicEDKey` in `desktop/src-tauri/Info.plist`, the private half the
+  `SPARKLE_PRIVATE_KEY` Actions secret. It's Quintodrome's and Hyper's key
+  (the login Keychain's `hyper` account, backed up in 1Password as "Hyper
+  Sparkle update signing key"); the appcasts are separate, so no app is
+  offered another's updates. Pushing to the tap needs the
+  `HOMEBREW_TAP_SSH_KEY` secret, a key with write access to the tap.
+- **Version:** release builds take the tag's version (what people see);
+  Sparkle compares `CFBundleVersion`, which is the workflow's run number, as
+  is the appcast's `sparkle:version`.
+- The app is only ad-hoc signed: the cask strips the quarantine flag, and
+  says `auto_updates true`, so `brew upgrade` leaves it to Sparkle.
+
 ### 4. iPhone app (`mobile/`)
 
 React Native 0.85 (the version the Jitsi Meet SDK, 13.3, supports), iOS

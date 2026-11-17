@@ -1,0 +1,290 @@
+name: Desktop Release
+
+# Builds the Quple desktop app (Tauri) for macOS (.app, both architectures),
+# as Quintodrome does. On `v*` tags the same job, on the Mac, publishes the
+# Forgejo release and updates the Homebrew tap: the cask, and the Sparkle
+# appcasts the app checks for updates (one per architecture, signed with the
+# SPARKLE_PRIVATE_KEY secret; desktop/src-tauri/src/updater.rs). Windows and
+# Linux aren't built here.
+#
+# Releasing: git tag -a v1.2.3 -m "What's new" && git push origin v1.2.3
+# (the tag's message is the release notes, and what Sparkle's update
+# window shows).
+#
+# Note: the app is only ad-hoc signed (no Apple certificate), so a
+# downloaded .app hits Gatekeeper; the Homebrew cask strips the quarantine
+# flag. Sparkle's updates are verified with its own Ed25519 signature.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+concurrency:
+  group: desktop-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-desktop:
+    name: Build desktop (macos)
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Both Mac targets build in one job, one after the other: there is
+          # one Mac runner (no Intel one, so x86_64 is cross-compiled).
+          - os: macos-latest
+            name: macos
+            targets: aarch64-apple-darwin,x86_64-apple-darwin
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # For the Tauri CLI (npx); the app's own frontend is static files.
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Setup Rust
+        uses: https://github.com/dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.targets }}
+
+      - name: Cache Rust build
+        uses: https://github.com/Swatinem/rust-cache@v2
+        with:
+          workspaces: desktop/src-tauri
+
+      # Sparkle, the macOS updater the app links against and embeds
+      # (tauri.conf.json's bundle.macOS.frameworks), plus its signing tools.
+      - name: Setup Sparkle
+        shell: bash
+        run: |
+          bash desktop/scripts/download-sparkle.sh desktop/src-tauri
+          echo "SPARKLE_FRAMEWORK_PATH=$PWD/desktop/src-tauri" >> "$GITHUB_ENV"
+
+      - name: Build Tauri app
+        shell: bash
+        run: |
+          cd desktop
+          # The app's version is the tag's (tauri.conf.json's own is a
+          # placeholder for local builds). Sparkle doesn't compare that one:
+          # it compares CFBundleVersion, and ignores everything after a "-",
+          # so CFBundleVersion is the run number, which only goes up; the
+          # appcast says the same (sparkle:version), and shows the tag's.
+          CONFIG=()
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            CONFIG=(--config "{\"version\":\"${GITHUB_REF_NAME#v}\",\"bundle\":{\"macOS\":{\"bundleVersion\":\"$GITHUB_RUN_NUMBER\"}}}")
+          fi
+          for TARGET in $(echo "${{ matrix.targets }}" | tr , " "); do
+            # rust-toolchain.toml pins a toolchain other than the one Setup
+            # Rust gave the targets to, so add each to the pinned one here.
+            rustup target add "$TARGET"
+            npx --yes @tauri-apps/cli@2 build --target "$TARGET" --bundles app,dmg "${CONFIG[@]}"
+          done
+
+      - name: Collect artifacts
+        shell: bash
+        run: |
+          mkdir -p dist
+          for TARGET in $(echo "${{ matrix.targets }}" | tr , " "); do
+            BUNDLE=desktop/src-tauri/target/$TARGET/release/bundle
+            ditto -c -k --keepParent "$BUNDLE/macos/Quple.app" "dist/Quple-$TARGET.app.zip"
+            cp "$BUNDLE"/dmg/*.dmg dist/ 2>/dev/null || true
+          done
+          ls -la dist
+
+      # Sparkle only installs updates signed with the key whose public half is
+      # in Info.plist. The signatures go into the appcasts (below).
+      - name: Sign updates
+        shell: bash
+        env:
+          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$SPARKLE_PRIVATE_KEY" ]]; then
+            if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+              echo "::error::SPARKLE_PRIVATE_KEY secret is not set (this repo's Settings > Actions > Secrets)"
+              exit 1
+            fi
+            echo "No SPARKLE_PRIVATE_KEY; not signing (not a release)"
+            exit 0
+          fi
+          KEY_FILE="$RUNNER_TEMP/sparkle_key"
+          trap 'rm -f "$KEY_FILE"' EXIT
+          (umask 077; printf '%s\n' "$SPARKLE_PRIVATE_KEY" > "$KEY_FILE")
+          mkdir -p sparkle
+          for TARGET in $(echo "${{ matrix.targets }}" | tr , " "); do
+            ARCH="${TARGET%%-*}"
+            # Prints: sparkle:edSignature="..." length="..."
+            desktop/src-tauri/sparkle-bin/sign_update "dist/Quple-$TARGET.app.zip" -f "$KEY_FILE" > "sparkle/$ARCH.txt"
+            cat "sparkle/$ARCH.txt"
+          done
+
+      - name: Upload artifacts
+        uses: https://code.forgejo.org/forgejo/upload-artifact@v4
+        with:
+          name: desktop-${{ matrix.name }}
+          path: dist/*
+          retention-days: 7
+
+      # The release itself happens here, on the Mac that built it, rather
+      # than in jobs of their own on the Linux runners: those queued for
+      # minutes behind CI runs, for a few curl calls and a git push. It runs
+      # in the runner's own account (host mode), so everything it writes
+      # stays in the job's directory or $RUNNER_TEMP, never in ~/.ssh.
+
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          # The release notes are the tag's message (git tag -a … -m "…").
+          NOTES=$(curl -fsS "$GITHUB_SERVER_URL/api/v1/repos/$GITHUB_REPOSITORY/tags/$GITHUB_REF_NAME" \
+            -H "Authorization: token $TOKEN" | jq -r '.message // ""')
+          printf '%s\n' "$NOTES" > notes.txt
+          API="$GITHUB_SERVER_URL/api/v1/repos/$GITHUB_REPOSITORY"
+          # A re-run finds the release an earlier attempt made, and replaces
+          # its files.
+          RELEASE=$(curl -sS "$API/releases/tags/$GITHUB_REF_NAME" -H "Authorization: token $TOKEN")
+          RELEASE_ID=$(jq -r '.id // empty' <<<"$RELEASE")
+          if [[ -z "$RELEASE_ID" ]]; then
+            # tag_name must be the pushed tag itself (with its "v"), or
+            # Forgejo creates a second tag without it.
+            RELEASE=$(jq -n --arg tag "$GITHUB_REF_NAME" --arg name "${GITHUB_REF_NAME#v}" --arg body "$NOTES" \
+                '{tag_name: $tag, name: $name, body: $body, draft: false}' \
+              | curl -fsS -X POST "$API/releases" \
+                -H "Authorization: token $TOKEN" \
+                -H "Content-Type: application/json" \
+                --data-binary @-)
+            RELEASE_ID=$(jq -r '.id' <<<"$RELEASE")
+          fi
+          for f in dist/*; do
+            NAME=$(basename "$f")
+            OLD=$(jq -r --arg n "$NAME" '.assets[]? | select(.name == $n) | .id' <<<"$RELEASE")
+            for id in $OLD; do
+              curl -fsS -X DELETE "$API/releases/$RELEASE_ID/assets/$id" -H "Authorization: token $TOKEN"
+            done
+            curl -fsS -o /dev/null -X POST "$API/releases/$RELEASE_ID/assets?name=$NAME" \
+              -H "Authorization: token $TOKEN" \
+              -H "Content-Type: application/octet-stream" \
+              --data-binary @"$f"
+            echo "uploaded $NAME"
+          done
+
+      # The cask, and one Sparkle appcast per architecture (Sparkle has no
+      # way to pick an architecture's download out of one feed). The app
+      # reads the appcasts from the tap through rgit (desktop/src-tauri/
+      # Info.plist, src/updater.rs). The app is only ad-hoc signed, so the
+      # cask strips the quarantine flag that Homebrew adds; otherwise
+      # Gatekeeper refuses to open it.
+      - name: Write cask and appcasts
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        env:
+          # Where the cask and the appcasts download releases from: the
+          # forge is tailnet-only, but git.quineglobal.com (the public view
+          # of the repos, rgit) serves public repos' release files at the
+          # forge's own paths, straight from it (petersweb-infra's
+          # nixos/rgit.nix).
+          DOWNLOAD_URL: https://git.quineglobal.com
+          # The public view of the repos (rgit).
+          GIT_URL: https://git.quineglobal.com
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME#v}"
+          ARM_SHA=$(shasum -a 256 dist/Quple-aarch64-apple-darwin.app.zip | cut -d' ' -f1)
+          INTEL_SHA=$(shasum -a 256 dist/Quple-x86_64-apple-darwin.app.zip | cut -d' ' -f1)
+          mkdir -p tap/Casks tap/appcasts
+          cat > tap/Casks/quple.rb <<CASK
+          cask "quple" do
+            arch arm: "aarch64", intel: "x86_64"
+
+            version "$VERSION"
+            sha256 arm:   "$ARM_SHA",
+                   intel: "$INTEL_SHA"
+
+            url "$DOWNLOAD_URL/$GITHUB_REPOSITORY/releases/download/v#{version}/Quple-#{arch}-apple-darwin.app.zip"
+            name "Quple"
+            desc "Call other Quine users over Jitsi Meet"
+            homepage "$GIT_URL/$GITHUB_REPOSITORY.git"
+
+            # The app updates itself (Sparkle), so \`brew upgrade\` leaves it
+            # be unless asked with --greedy.
+            auto_updates true
+            depends_on :macos
+
+            app "Quple.app"
+
+            postflight_steps do
+              run "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "{{appdir}}/Quple.app"]
+            end
+
+            zap trash: [
+              "~/Library/Application Support/com.quple.desktop",
+            ]
+          end
+          CASK
+          cat tap/Casks/quple.rb
+
+          # Sparkle shows the notes in its update window: the tag's message,
+          # as HTML (escaped, one line per line).
+          NOTES_HTML=$(sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g' -e 's/$/<br>/' notes.txt)
+          # RFC 822, in English whatever the Mac's locale (BSD date has no -R).
+          PUB_DATE=$(LC_ALL=C date -u '+%a, %d %b %Y %H:%M:%S +0000')
+          for ARCH in aarch64 x86_64; do
+            SIGNATURE=$(cat "sparkle/$ARCH.txt")
+            cat > "tap/appcasts/quple-$ARCH.xml" <<APPCAST
+          <?xml version="1.0" encoding="utf-8"?>
+          <rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">
+            <channel>
+              <title>Quple</title>
+              <item>
+                <title>Quple $VERSION</title>
+                <sparkle:version>$GITHUB_RUN_NUMBER</sparkle:version>
+                <sparkle:shortVersionString>$VERSION</sparkle:shortVersionString>
+                <pubDate>$PUB_DATE</pubDate>
+                <description><![CDATA[$NOTES_HTML]]></description>
+                <enclosure url="$DOWNLOAD_URL/$GITHUB_REPOSITORY/releases/download/$GITHUB_REF_NAME/Quple-$ARCH-apple-darwin.app.zip" type="application/octet-stream" $SIGNATURE/>
+              </item>
+            </channel>
+          </rss>
+          APPCAST
+            cat "tap/appcasts/quple-$ARCH.xml"
+          done
+
+      - name: Push to tap
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        env:
+          SSH_KEY: ${{ secrets.HOMEBREW_TAP_SSH_KEY }}
+          TAP_REPO: ssh://git@forge.in.quineglobal.com:2200/quine-global/homebrew-tap.git # Forgejo SSH is on 2200; 22 is the host's sshd
+        run: |
+          set -euo pipefail
+          if [[ -z "$SSH_KEY" ]]; then
+            echo "::error::HOMEBREW_TAP_SSH_KEY secret is not set (add it under this repo's Settings > Actions > Secrets; its public key needs write access on the tap repo)"
+            exit 1
+          fi
+          # The key and known_hosts live in $RUNNER_TEMP, not the Mac
+          # account's ~/.ssh.
+          KEY_FILE="$RUNNER_TEMP/tap_key"
+          KNOWN_HOSTS="$RUNNER_TEMP/tap_known_hosts"
+          trap 'rm -f "$KEY_FILE" "$KNOWN_HOSTS"' EXIT
+          (umask 077; printf '%s\n' "$SSH_KEY" > "$KEY_FILE")
+          echo "[forge.in.quineglobal.com]:2200 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHECXyh0SwRlXikgu919nC9OTmAU7AEcrlbJ/J/H9DTU" > "$KNOWN_HOSTS"
+          export GIT_SSH_COMMAND="ssh -i $KEY_FILE -o IdentitiesOnly=yes -o UserKnownHostsFile=$KNOWN_HOSTS -o StrictHostKeyChecking=yes"
+          rm -rf repo
+          git clone -q "$TAP_REPO" repo
+          mkdir -p repo/Casks repo/appcasts
+          cp tap/Casks/quple.rb repo/Casks/
+          cp tap/appcasts/quple-*.xml repo/appcasts/
+          cd repo
+          git config user.name "Quple release"
+          git config user.email "noreply@forge.in.quineglobal.com"
+          git add Casks/quple.rb appcasts/quple-*.xml
+          git diff --cached --quiet && { echo "Cask and appcasts unchanged"; exit 0; }
+          git commit -q -m "quple ${GITHUB_REF_NAME#v}"
+          git push -q

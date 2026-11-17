@@ -4,6 +4,9 @@
 # Rust
 /desktop/src-tauri/target/
 /desktop/src-tauri/gen/
+# Sparkle (desktop/scripts/download-sparkle.sh)
+/desktop/src-tauri/Sparkle.framework/
+/desktop/src-tauri/sparkle-bin/
 
 # Go
 /server/quple-server

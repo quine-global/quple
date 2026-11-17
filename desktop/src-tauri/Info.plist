@@ -1,7 +1,20 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Merged into the app's Info.plist by Tauri. Besides camera and
+     microphone, Sparkle's settings (src/updater.rs): the appcast the release
+     workflow writes into the Homebrew tap (served publicly by
+     git.quineglobal.com), and the public half of the Ed25519 key that signs
+     each update (the private half is the SPARKLE_PRIVATE_KEY Actions secret;
+     the same key as Quintodrome's and Hyper's, desktop/README.md). Intel
+     builds switch to their own appcast at startup. -->
 <plist version="1.0">
 <dict>
+  <key>SUFeedURL</key>
+  <string>https://git.quineglobal.com/quine-global/homebrew-tap.git/tree/appcasts/quple-aarch64.xml?raw=true</string>
+  <key>SUPublicEDKey</key>
+  <string>PasstyI8TVmTzH+i0ICnqwn2Z6BpqwOjcMwpyKhSFXk=</string>
+  <key>SUEnableAutomaticChecks</key>
+  <true/>
   <key>NSCameraUsageDescription</key>
   <string>Quple uses your camera for video calls.</string>
   <key>NSMicrophoneUsageDescription</key>

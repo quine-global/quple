@@ -1,4 +1,6 @@
 mod quine;
+#[cfg(target_os = "macos")]
+mod updater;
 
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -322,7 +324,22 @@ fn open_meeting(
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let builder = tauri::Builder::default();
+    // Updates through Sparkle, with Check for Updates… in the app menu.
+    #[cfg(target_os = "macos")]
+    let builder = builder
+        .plugin(tauri_plugin_sparkle_updater::init())
+        .menu(|handle| updater::menu(handle))
+        .on_menu_event(|app, event| {
+            if event.id() == updater::CHECK_FOR_UPDATES_ID {
+                updater::check_for_updates(app);
+            }
+        })
+        .setup(|app| {
+            updater::setup(app.handle());
+            Ok(())
+        });
+    builder
         .plugin(tauri_plugin_opener::init())
         .manage(quine::QuineAuth::default())
         .invoke_handler(tauri::generate_handler![
