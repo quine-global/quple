@@ -2,6 +2,7 @@
 // Quine access token on every request.
 
 import { accessToken } from './auth';
+import { DEVICE_NAME, deviceId } from './device';
 
 export type Me = { username: string; defaultJitsiUrl: string };
 export type Contact = { username: string; online: boolean };
@@ -14,7 +15,15 @@ export type CallStatus = {
   peerSeenMsAgo: number | null;
   /** Who hung up or declined; "" while the call is on. */
   endedBy: string;
+  /**
+   * Set when the call has moved to another of your devices (its name): mute
+   * now, and leave the room (without hanging up) once `movedJoined`.
+   */
+  movedTo?: string;
+  movedJoined?: boolean;
 };
+/** A call of yours on another of your devices, which this one can take over. */
+export type ActiveCall = { meetingId: string; peer: string; jitsiUrl: string; device: string };
 
 export class Api {
   constructor(private serverUrl: string) {}
@@ -38,8 +47,11 @@ export class Api {
   me() {
     return this.request<Me>('/me');
   }
-  poll() {
-    return this.request<{ invites: Invite[] }>('/poll').then(r => r.invites ?? []);
+  /** Calls for you, and your calls on your other devices. */
+  async poll() {
+    const device = await deviceId();
+    const r = await this.request<{ invites?: Invite[]; calls?: ActiveCall[] }>(`/poll?device=${encodeURIComponent(device)}`);
+    return { invites: r.invites ?? [], calls: r.calls ?? [] };
   }
   call(to: string, jitsiUrl?: string) {
     return this.request<Call>('/call', { method: 'POST', body: JSON.stringify({ to, jitsiUrl }) });
@@ -48,8 +60,15 @@ export class Api {
   callStatus(meetingId: string) {
     return this.request<CallStatus>(`/calls/${encodeURIComponent(meetingId)}`);
   }
-  heartbeat(meetingId: string) {
-    return this.request<CallStatus>(`/calls/${encodeURIComponent(meetingId)}/heartbeat`, { method: 'POST' });
+  /** From a call screen: this device is in the call (`joined`: in the Jitsi room). */
+  async heartbeat(meetingId: string, joined = false) {
+    const body = JSON.stringify({ device: await deviceId(), name: DEVICE_NAME, joined });
+    return this.request<CallStatus>(`/calls/${encodeURIComponent(meetingId)}/heartbeat`, { method: 'POST', body });
+  }
+  /** Moves your side of a call to this device; the other one leaves once this one's joined. */
+  async move(meetingId: string) {
+    const body = JSON.stringify({ device: await deviceId(), name: DEVICE_NAME });
+    return this.request<ActiveCall>(`/calls/${encodeURIComponent(meetingId)}/move`, { method: 'POST', body });
   }
   hangUp(meetingId: string) {
     return this.request<{ ok: boolean }>(`/calls/${encodeURIComponent(meetingId)}/hangup`, { method: 'POST' });

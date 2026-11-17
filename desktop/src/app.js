@@ -84,6 +84,25 @@ function openMeeting(me, jitsiUrl, meetingId, peer) {
 
 const callPath = (meetingId) => `/calls/${encodeURIComponent(meetingId)}`;
 
+/**
+ * Which device this is, to Quple's server: a random ID kept for good, so a
+ * call can be moved between your devices (README "Moving a call").
+ */
+function deviceId() {
+  let id = null;
+  try {
+    id = localStorage.getItem("quple.device");
+    if (!id) {
+      id = crypto.randomUUID();
+      localStorage.setItem("quple.device", id);
+    }
+  } catch (_) {}
+  return id || "desktop";
+}
+const DEVICE = deviceId();
+/** What your other devices call this one: "In a call with bob on your Mac". */
+const DEVICE_NAME = /Mac/.test(navigator.userAgent) ? "Mac" : "computer";
+
 /** The watchdog's state for a call that's just been (re)joined (watchdog.js). */
 function newWatch() {
   const now = Date.now();
@@ -322,6 +341,8 @@ function Dashboard({ me, api, jitsiBase, jitsiSignedIn, onJitsiBase, onSettings 
   invitesRef.current = invites;
   // Why the last call ended, when it wasn't you.
   const [notice, setNotice] = useState("");
+  // Your calls on your other devices (the iPhone), to move here.
+  const [elsewhere, setElsewhere] = useState([]);
   const [target, setTarget] = useState("");
   // The Jitsi server the next call happens on; whoever answers joins it there.
   const [server, setServer] = useState(jitsiBase);
@@ -340,7 +361,8 @@ function Dashboard({ me, api, jitsiBase, jitsiSignedIn, onJitsiBase, onSettings 
   // Polling also tells the server we're online.
   useInterval(async () => {
     try {
-      const { invites } = await api("/poll");
+      const { invites, calls } = await api(`/poll?device=${encodeURIComponent(DEVICE)}`);
+      setElsewhere(calls || []);
       if (invites && invites.length > 0) {
         const now = Date.now();
         setInvites((queue) => [...queue, ...invites.map((inv) => ({ ...inv, receivedAt: now }))]);
@@ -369,13 +391,23 @@ function Dashboard({ me, api, jitsiBase, jitsiSignedIn, onJitsiBase, onSettings 
     setActive(c);
   };
 
-  /** Ends the call: tells the server (the other app ends it too) and closes its window. */
-  const endCall = (why = "", { closeWindow = true } = {}) => {
+  /** From the call: this device is in it (`joined`: in the Jitsi room). */
+  const heartbeat = (meetingId) =>
+    api(`${callPath(meetingId)}/heartbeat`, {
+      method: "POST",
+      body: JSON.stringify({ device: DEVICE, name: DEVICE_NAME, joined: !!(watch.current && watch.current.joined) }),
+    });
+
+  /**
+   * Ends the call: tells the server (the other app ends it too) and closes
+   * its window. `hangUp: false` when it goes on elsewhere (moved).
+   */
+  const endCall = (why = "", { closeWindow = true, hangUp = true } = {}) => {
     const c = activeRef.current;
     if (!c) return;
     setCall(null);
     watch.current = null;
-    api(`${callPath(c.meetingId)}/hangup`, { method: "POST" }).catch(() => {});
+    if (hangUp) api(`${callPath(c.meetingId)}/hangup`, { method: "POST" }).catch(() => {});
     if (closeWindow) invoke("close_meeting", { room: c.meetingId }).catch(() => {});
     setNotice(why);
   };
@@ -389,7 +421,7 @@ function Dashboard({ me, api, jitsiBase, jitsiSignedIn, onJitsiBase, onSettings 
     watch.current = newWatch();
     // A heartbeat now: for the callee, it's what tells the caller's app the
     // call was answered.
-    api(`${callPath(c.meetingId)}/heartbeat`, { method: "POST" }).catch(() => {});
+    heartbeat(c.meetingId).catch(() => {});
     try {
       await openMeeting(me, c.jitsiUrl, c.meetingId, c.peer);
     } catch (err) {
@@ -404,7 +436,7 @@ function Dashboard({ me, api, jitsiBase, jitsiSignedIn, onJitsiBase, onSettings 
     try {
       let st = null;
       try {
-        st = await api(`${callPath(c.meetingId)}/heartbeat`, { method: "POST" });
+        st = await heartbeat(c.meetingId);
       } catch (err) {
         // The server down, or restarted and forgot the call: go on what the
         // room says.
@@ -422,6 +454,17 @@ function Dashboard({ me, api, jitsiBase, jitsiSignedIn, onJitsiBase, onSettings 
         return;
       }
       const w = watch.current;
+      // Taken over by another of your devices: mute at once (they may be
+      // side by side), and leave once it's in the room. Not hanging up: the
+      // call goes on there.
+      if (st && st.movedTo) {
+        if (!w.mutedForMove) {
+          w.mutedForMove = true;
+          invoke("set_meeting_muted", { room: c.meetingId, muted: true }).catch(() => {});
+        }
+        if (st.movedJoined) endCall(`Moved to your ${st.movedTo}`, { hangUp: false });
+        return;
+      }
       if (st) {
         w.status = st;
         w.statusAt = Date.now();
@@ -482,6 +525,26 @@ function Dashboard({ me, api, jitsiBase, jitsiSignedIn, onJitsiBase, onSettings 
     }
     if (gone && invitesRef.current[0] === inv) dropInvite(inv, `Missed a call from ${inv.from}`);
   }, POLL_INTERVAL_MS);
+
+  // Takes a call over from another device: this one joins the room, and
+  // the other leaves once it has.
+  const moveHere = async (ac) => {
+    if (activeRef.current) {
+      setNotice("Hang up the call you're in first.");
+      return;
+    }
+    try {
+      const moved = await api(`${callPath(ac.meetingId)}/move`, {
+        method: "POST",
+        body: JSON.stringify({ device: DEVICE, name: DEVICE_NAME }),
+      });
+      setElsewhere([]);
+      setNotice("");
+      await startInCall({ meetingId: moved.meetingId, peer: moved.peer, jitsiUrl: moved.jitsiUrl, outgoing: true });
+    } catch (err) {
+      setNotice(`Couldn't move the call here: ${err.message}`);
+    }
+  };
 
   const call = async (who) => {
     who = who.trim().toLowerCase();
@@ -591,6 +654,14 @@ function Dashboard({ me, api, jitsiBase, jitsiSignedIn, onJitsiBase, onSettings 
       </div>
 
       ${notice && html`<p class="notice">${notice}</p>`}
+
+      ${!active &&
+      elsewhere.map(
+        (ac) => html`<div class="card in-call" key=${ac.meetingId}>
+          <span>In a call with <strong>${ac.peer}</strong>${ac.device ? ` on your ${ac.device}` : ""}</span>
+          <button type="button" onClick=${() => moveHere(ac)}>Move to this ${DEVICE_NAME}</button>
+        </div>`,
+      )}
 
       ${active &&
       active.phase === "in-call" &&

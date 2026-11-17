@@ -58,6 +58,19 @@ other and agree on a meeting room.
    (joined, how many others, from Jitsi's `window.APP`) through the page
    title, which the app reads (`desktop/src-tauri/src/lib.rs`). Closing
    that window, or Jitsi's hang-up button, hangs up.
+7. **Moving a call.** Each app has a device ID (kept for good: the iPhone's
+   in AsyncStorage, the Mac's in its webview's localStorage), sent with
+   every heartbeat. The first device to send one holds your side of the
+   call. While it lasts, your other devices see it on their next poll
+   (`/poll?device=…` lists it once answered): "In a call with bob on your
+   iPhone — Move to this Mac". Moving (`POST /calls/{id}/move`) makes that
+   device the holder and joins the same Jitsi room from it; the old one's
+   next heartbeat answer says `movedTo`, so it mutes at once (the two may be
+   side by side) and, once the new one reports it's in the room
+   (`movedJoined`), leaves without hanging up. Bob sees you drop out and
+   come back for a moment; his app keeps the call, since it goes by your
+   username. It works both ways, but the device you move to has to have
+   Quple open (no VoIP push).
 
 Every request to the signaling server carries a Quine access token; the
 server takes the caller's username (the token's `preferred_username`) from
@@ -291,9 +304,10 @@ caller's username is the token's `preferred_username`.
 | `GET /me`                     | —                                       | `{"username":"alice","defaultJitsiUrl":"https://meet.jit.si"}` |
 | `POST /register`              | —                                       | `{"ok":true}` — marks you online |
 | `POST /call`                  | `{"to":"bob","jitsiUrl":"https://meet.jit.si"}` | `{"meetingId":…,"jitsiUrl":…}` — `jitsiUrl` is optional (default `DEFAULT_JITSI`) |
-| `GET /poll`                   | —                                       | `{"invites":[{"from":…,"meetingId":…,"jitsiUrl":…,"createdAt":…}]}` — also marks you online, and clears delivered invites |
+| `GET /poll[?device=…]`        | —                                       | `{"invites":[{"from":…,"meetingId":…,"jitsiUrl":…,"createdAt":…}]}` — also marks you online, and clears delivered invites. With `device`, also `"calls":[{"meetingId":…,"peer":…,"jitsiUrl":…,"device":"iPhone"}]`: your answered calls on your other devices, to move |
 | `GET /calls/{meetingId}`            | —                                 | the same as a heartbeat's answer, without counting as one: for a phone that's ringing (has the caller given up?) |
-| `POST /calls/{meetingId}/heartbeat` | —                                 | `{"peer":"bob","peerSeenMsAgo":1200,"endedBy":""}` — sent every few seconds from a call screen; `peerSeenMsAgo` is `null` until the other side's call screen opens (not answered; the caller's call screen is up from the start), `endedBy` is who hung up. Also marks you online. Only the call's two parties: 403 otherwise, 404 for unknown or long-idle calls |
+| `POST /calls/{meetingId}/heartbeat` | `{"device":"…","name":"iPhone","joined":true}` (optional) | `{"peer":"bob","peerSeenMsAgo":1200,"endedBy":""}` — sent every few seconds from a call screen; `peerSeenMsAgo` is `null` until the other side's call screen opens (not answered; the caller's call screen is up from the start), `endedBy` is who hung up. With a device, also `movedTo`/`movedJoined` when the call is now on another of your devices (see "Moving a call"). Also marks you online. Only the call's two parties: 403 otherwise, 404 for unknown or long-idle calls |
+| `POST /calls/{meetingId}/move`      | `{"device":"…","name":"Mac"}`     | `{"meetingId":…,"peer":"bob","jitsiUrl":…,"device":"Mac"}` — puts your side of the call on this device; your other one leaves once this one's heartbeat says `joined`. 409 if it's ended |
 | `POST /calls/{meetingId}/hangup`    | —                                 | `{"ok":true}` — ends the call for both sides (hanging up, declining, or the ring running out) |
 | `GET /contacts`               | —                                       | `{"contacts":[{"username":…,"online":true}]}` |
 | `POST /contacts`              | `{"username":"bob"}`                    | the added contact |

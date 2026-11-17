@@ -315,6 +315,20 @@ fn rejoin_meeting(app: tauri::AppHandle, room: String) -> Result<(), String> {
     }
 }
 
+/// Mutes (or unmutes) the microphone in a meeting: muted at once when the
+/// call moves to another device, which may be right beside this one.
+#[tauri::command]
+fn set_meeting_muted(app: tauri::AppHandle, room: String, muted: bool) -> Result<(), String> {
+    match app.get_webview_window(&meeting_label(&room)) {
+        Some(w) => w
+            .eval(format!(
+                "try {{ window.APP && APP.conference.muteAudio({muted}).catch(function () {{}}); }} catch (e) {{}}"
+            ))
+            .map_err(|e| e.to_string()),
+        None => Err(format!("no meeting window for {room}")),
+    }
+}
+
 /// Opens (or focuses) a dedicated window for a Jitsi meeting. The meeting
 /// window is plain remote web content with no Tauri capability grants, so
 /// third-party JS running inside Jitsi never gets access to the app's IPC
@@ -463,6 +477,7 @@ pub fn run() {
             open_meeting,
             close_meeting,
             rejoin_meeting,
+            set_meeting_muted,
             jitsi_signed_in,
             jitsi_sign_in,
             jitsi_sign_out,

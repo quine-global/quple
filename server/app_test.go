@@ -237,3 +237,82 @@ func TestCancelledCallIsNotDelivered(t *testing.T) {
 		t.Fatalf("cancelled call delivered: %v", poll)
 	}
 }
+
+func TestMoveCallBetweenDevices(t *testing.T) {
+	srv := newTestApp(t)
+	_, call := do(t, srv, "alice", "POST", "/call", `{"to":"bob"}`)
+	id := call["meetingId"].(string)
+	path := "/calls/" + id
+	phone := `{"device":"alice-phone","name":"iPhone","joined":true}`
+
+	// Alice talks on her iPhone; bob answers.
+	do(t, srv, "alice", "POST", path+"/heartbeat", phone)
+	do(t, srv, "bob", "POST", path+"/heartbeat", `{"device":"bob-phone","name":"iPhone","joined":true}`)
+
+	// Her Mac sees the call on her iPhone; the iPhone doesn't see its own.
+	_, poll := do(t, srv, "alice", "GET", "/poll?device=alice-mac", "")
+	calls := poll["calls"].([]any)
+	if len(calls) != 1 {
+		t.Fatalf("mac sees %v", poll)
+	}
+	if c := calls[0].(map[string]any); c["meetingId"] != id || c["peer"] != "bob" || c["device"] != "iPhone" || c["jitsiUrl"] != "https://meet.jit.si" {
+		t.Fatalf("active call: %v", c)
+	}
+	if _, poll = do(t, srv, "alice", "GET", "/poll?device=alice-phone", ""); len(poll["calls"].([]any)) != 0 {
+		t.Fatalf("phone sees its own call: %v", poll)
+	}
+	// Nor does bob's iPhone see his own side.
+	if _, poll = do(t, srv, "bob", "GET", "/poll?device=bob-phone", ""); len(poll["calls"].([]any)) != 0 {
+		t.Fatalf("bob's phone sees its own call: %v", poll)
+	}
+
+	// The Mac takes it. Until it's joined, the iPhone is told to mute only.
+	if status, moved := do(t, srv, "alice", "POST", path+"/move", `{"device":"alice-mac","name":"Mac"}`); status != 200 || moved["jitsiUrl"] != "https://meet.jit.si" || moved["peer"] != "bob" {
+		t.Fatalf("move: %d %v", status, moved)
+	}
+	if _, st := do(t, srv, "alice", "POST", path+"/heartbeat", phone); st["movedTo"] != "Mac" || st["movedJoined"] == true {
+		t.Fatalf("phone before the mac joined: %v", st)
+	}
+	do(t, srv, "alice", "POST", path+"/heartbeat", `{"device":"alice-mac","name":"Mac","joined":true}`)
+	if _, st := do(t, srv, "alice", "POST", path+"/heartbeat", phone); st["movedTo"] != "Mac" || st["movedJoined"] != true {
+		t.Fatalf("phone after the mac joined: %v", st)
+	}
+	// The Mac isn't told to move anywhere, and now the iPhone sees the call
+	// on the Mac (to take back).
+	if _, st := do(t, srv, "alice", "POST", path+"/heartbeat", `{"device":"alice-mac","name":"Mac","joined":true}`); st["movedTo"] != nil {
+		t.Fatalf("mac told to move: %v", st)
+	}
+	if _, poll = do(t, srv, "alice", "GET", "/poll?device=alice-phone", ""); len(poll["calls"].([]any)) != 1 {
+		t.Fatalf("phone doesn't see the call on the mac: %v", poll)
+	}
+
+	// Bob can't move alice's side; nobody can move an ended call; a move
+	// needs a device.
+	if status, _ := do(t, srv, "eve", "POST", path+"/move", `{"device":"x","name":"x"}`); status != 403 {
+		t.Errorf("stranger move: %d", status)
+	}
+	if status, _ := do(t, srv, "alice", "POST", path+"/move", `{}`); status != 400 {
+		t.Errorf("move without a device: %d", status)
+	}
+	do(t, srv, "bob", "POST", path+"/hangup", "")
+	if status, _ := do(t, srv, "alice", "POST", path+"/move", `{"device":"alice-phone","name":"iPhone"}`); status != 409 {
+		t.Errorf("moving an ended call: %d", status)
+	}
+	if _, poll = do(t, srv, "alice", "GET", "/poll?device=alice-phone", ""); len(poll["calls"].([]any)) != 0 {
+		t.Fatalf("ended call still offered: %v", poll)
+	}
+}
+
+func TestUnansweredCallIsNotOffered(t *testing.T) {
+	srv := newTestApp(t)
+	_, call := do(t, srv, "alice", "POST", "/call", `{"to":"bob"}`)
+	do(t, srv, "alice", "POST", "/calls/"+call["meetingId"].(string)+"/heartbeat", `{"device":"alice-phone","name":"iPhone"}`)
+	// Still ringing: nothing to move to the Mac yet.
+	if _, poll := do(t, srv, "alice", "GET", "/poll?device=alice-mac", ""); len(poll["calls"].([]any)) != 0 {
+		t.Fatalf("ringing call offered: %v", poll)
+	}
+	// /poll without a device is as before.
+	if _, poll := do(t, srv, "alice", "GET", "/poll", ""); poll["calls"] != nil {
+		t.Fatalf("calls without a device: %v", poll)
+	}
+}

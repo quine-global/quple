@@ -58,6 +58,7 @@ func (a *App) Routes(mux *http.ServeMux) {
 	mux.HandleFunc("/calls/{id}", withCORS(a.requireAuth(a.handleCallStatus)))
 	mux.HandleFunc("/calls/{id}/heartbeat", withCORS(a.requireAuth(a.handleHeartbeat)))
 	mux.HandleFunc("/calls/{id}/hangup", withCORS(a.requireAuth(a.handleHangUp)))
+	mux.HandleFunc("/calls/{id}/move", withCORS(a.requireAuth(a.handleMove)))
 	mux.HandleFunc("/contacts", withCORS(a.requireAuth(a.handleContacts)))
 	mux.HandleFunc("/contacts/{username}", withCORS(a.requireAuth(a.handleContact)))
 }
@@ -111,13 +112,18 @@ func (a *App) handleRegister(w http.ResponseWriter, r *http.Request, me string) 
 }
 
 // handlePoll returns (and clears) invites waiting for the caller, and counts
-// as presence. GET
+// as presence. GET /poll[?device=...]
 func (a *App) handlePoll(w http.ResponseWriter, r *http.Request, me string) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "GET only")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string][]Invite{"invites": a.store.DrainInvites(me)})
+	body := map[string]any{"invites": a.store.DrainInvites(me)}
+	// With ?device=, also your calls on your other devices, to move here.
+	if device := r.URL.Query().Get("device"); device != "" {
+		body["calls"] = a.store.ActiveCalls(me, device)
+	}
+	writeJSON(w, http.StatusOK, body)
 }
 
 // handleCall starts a call from the caller to another user, on whichever
@@ -166,6 +172,8 @@ func writeCallError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusNotFound, err.Error())
 	case errors.Is(err, errNotParty):
 		writeError(w, http.StatusForbidden, err.Error())
+	case errors.Is(err, errCallEnded):
+		writeError(w, http.StatusConflict, err.Error())
 	default:
 		writeError(w, http.StatusInternalServerError, err.Error())
 	}
@@ -180,7 +188,15 @@ func (a *App) handleHeartbeat(w http.ResponseWriter, r *http.Request, me string)
 		writeError(w, http.StatusMethodNotAllowed, "POST only")
 		return
 	}
-	st, err := a.store.CallHeartbeat(r.PathValue("id"), me)
+	// The body says which device this is (optional: older apps send none).
+	var hb Heartbeat
+	if r.ContentLength != 0 {
+		if err := json.NewDecoder(r.Body).Decode(&hb); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid JSON body")
+			return
+		}
+	}
+	st, err := a.store.CallHeartbeat(r.PathValue("id"), me, hb)
 	if err != nil {
 		writeCallError(w, err)
 		return
@@ -201,6 +217,30 @@ func (a *App) handleCallStatus(w http.ResponseWriter, r *http.Request, me string
 		return
 	}
 	writeJSON(w, http.StatusOK, st)
+}
+
+// handleMove moves your side of a call to the device sending this: its
+// other device leaves once this one has joined the room. Answers with the
+// call, to join. POST /calls/{id}/move {"device": "...", "name": "Mac"}
+func (a *App) handleMove(w http.ResponseWriter, r *http.Request, me string) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "POST only")
+		return
+	}
+	var body struct {
+		Device string `json:"device"`
+		Name   string `json:"name"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Device == "" {
+		writeError(w, http.StatusBadRequest, `need {"device": ..., "name": ...}`)
+		return
+	}
+	ac, err := a.store.MoveCall(r.PathValue("id"), me, body.Device, body.Name)
+	if err != nil {
+		writeCallError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, ac)
 }
 
 // handleHangUp ends a call for both sides (hanging up, or declining an

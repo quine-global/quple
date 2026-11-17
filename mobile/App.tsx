@@ -25,7 +25,7 @@ import Clipboard from '@react-native-clipboard/clipboard';
 import { dump } from './src/logs';
 import { JitsiMeeting, JitsiRefProps } from '@jitsi/react-native-sdk';
 
-import { Api, CallStatus, Contact, Invite, Me } from './src/api';
+import { ActiveCall, Api, CallStatus, Contact, Invite, Me } from './src/api';
 import { SignedOut, restore, signIn, signOut } from './src/auth';
 import { connected, finish, onHangUp, ring, setupCallKit, startOutgoing, stopRinging } from './src/callkit';
 import { POLL_MS } from './src/config';
@@ -209,6 +209,30 @@ function HomeScreen(props: {
   const [target, setTarget] = useState('');
   const [jitsi, setJitsi] = useState(settings.jitsiUrl);
   const [status, setStatus] = useState(props.notice);
+  // Your calls on your other devices (the Mac), to move here.
+  const [elsewhere, setElsewhere] = useState<ActiveCall[]>([]);
+
+  // Takes a call over from another device: this one joins the room, and
+  // the other leaves once it has (README "Moving a call").
+  const moveHere = async (ac: ActiveCall) => {
+    const callUUID = startOutgoing(ac.peer);
+    try {
+      const moved = await api.move(ac.meetingId);
+      setElsewhere([]);
+      onJoin({
+        jitsiUrl: moved.jitsiUrl,
+        meetingId: moved.meetingId,
+        displayName: me?.username ?? '',
+        callUUID,
+        outgoing: true,
+        peer: moved.peer,
+        answered: true,
+      });
+    } catch (e) {
+      finish(callUUID);
+      fail(e);
+    }
+  };
   // Invites already rung, so a poll doesn't ring the same one twice.
   const seen = useRef(new Set<string>());
   const meRef = useRef<Me | null>(null);
@@ -283,7 +307,10 @@ function HomeScreen(props: {
     const tick = () => {
       api
         .poll()
-        .then(invites => invites.forEach(incoming))
+        .then(r => {
+          r.invites.forEach(incoming);
+          setElsewhere(r.calls);
+        })
         .catch(fail);
     };
     const start = () => {
@@ -395,6 +422,16 @@ function HomeScreen(props: {
       </View>
 
       {status ? <Text style={[styles.status, { color: c.muted }]}>{status}</Text> : null}
+
+      {elsewhere.map(ac => (
+        <View key={ac.meetingId} style={[styles.card, styles.elsewhere, { backgroundColor: c.card }]}>
+          <Text style={[styles.name, { color: c.text }]}>
+            In a call with {ac.peer}
+            {ac.device ? ` on your ${ac.device}` : ''}
+          </Text>
+          <Button c={c} title="Move here" onPress={() => moveHere(ac)} />
+        </View>
+      ))}
 
       <FlatList
         data={contacts ?? []}
@@ -525,15 +562,17 @@ function CallScreen(props: { meeting: Meeting; serverUrl: string; onEnd: (notice
   // Every way a call ends goes through here, and tells Quple's server, so
   // the other side's app ends it too.
   const end = useCallback(
-    (notice?: string) => {
+    (notice?: string, hangUp = true) => {
       if (ended.current) return;
       ended.current = true;
-      api.hangUp(meeting.meetingId).catch(() => {});
+      if (hangUp) api.hangUp(meeting.meetingId).catch(() => {});
       finish(meeting.callUUID);
       onEnd(notice);
     },
     [api, meeting.meetingId, meeting.callUUID, onEnd],
   );
+  // Moved to another device: muted once, then gone when it's joined.
+  const mutedForMove = useRef(false);
   useEffect(() => {
     console.log(`[quple] call screen: ${meeting.outgoing ? 'outgoing' : 'incoming'} ${meeting.jitsiUrl} ${meeting.meetingId}`);
   }, [meeting]);
@@ -556,7 +595,7 @@ function CallScreen(props: { meeting: Meeting; serverUrl: string; onEnd: (notice
       busy = true;
       const s = w.current;
       try {
-        s.status = await api.heartbeat(meeting.meetingId);
+        s.status = await api.heartbeat(meeting.meetingId, s.joined);
         s.statusAt = Date.now();
         if (s.status.peerSeenMsAgo !== null && s.peerSince === null) s.peerSince = Date.now();
       } catch (e: any) {
@@ -567,6 +606,22 @@ function CallScreen(props: { meeting: Meeting; serverUrl: string; onEnd: (notice
         busy = false;
       }
       if (ended.current) return;
+      // Taken over by another of your devices: mute at once (the two may be
+      // side by side), and leave once it's in the room. Not hanging up: the
+      // call goes on there.
+      const movedTo = s.status?.movedTo;
+      if (movedTo && s.statusAt && Date.now() - s.statusAt < 10_000) {
+        if (!mutedForMove.current) {
+          mutedForMove.current = true;
+          jitsi.current?.setAudioMuted?.(true);
+        }
+        if (s.status?.movedJoined) {
+          console.log(`[quple] moved to ${movedTo}`);
+          jitsi.current?.close();
+          end(`Moved to your ${movedTo}`, false);
+        }
+        return;
+      }
       const v = decide({ ...s, now: Date.now(), remotes: s.remotes.size, me: meeting.displayName });
       if (v.action === 'end') {
         console.log(`[quple] watchdog: ending: ${v.reason}`);
@@ -826,5 +881,6 @@ const styles = StyleSheet.create({
   remove: { fontSize: 16, paddingHorizontal: 4 },
   center: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: 24 },
   ringing: { marginVertical: 24 },
+  elsewhere: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12 },
   error: { marginBottom: 16, textAlign: 'center' },
 });
