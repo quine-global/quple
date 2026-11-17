@@ -55,6 +55,7 @@ func (a *App) Routes(mux *http.ServeMux) {
 	mux.HandleFunc("/register", withCORS(a.requireAuth(a.handleRegister)))
 	mux.HandleFunc("/poll", withCORS(a.requireAuth(a.handlePoll)))
 	mux.HandleFunc("/call", withCORS(a.requireAuth(a.handleCall)))
+	mux.HandleFunc("/calls/{id}", withCORS(a.requireAuth(a.handleCallStatus)))
 	mux.HandleFunc("/calls/{id}/heartbeat", withCORS(a.requireAuth(a.handleHeartbeat)))
 	mux.HandleFunc("/calls/{id}/hangup", withCORS(a.requireAuth(a.handleHangUp)))
 	mux.HandleFunc("/contacts", withCORS(a.requireAuth(a.handleContacts)))
@@ -180,6 +181,21 @@ func (a *App) handleHeartbeat(w http.ResponseWriter, r *http.Request, me string)
 		return
 	}
 	st, err := a.store.CallHeartbeat(r.PathValue("id"), me)
+	if err != nil {
+		writeCallError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, st)
+}
+
+// handleCallStatus is the call as the caller sees it, without counting as
+// a heartbeat (answering): for a phone that's still ringing. GET /calls/{id}
+func (a *App) handleCallStatus(w http.ResponseWriter, r *http.Request, me string) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "GET only")
+		return
+	}
+	st, err := a.store.CallStatus(r.PathValue("id"), me)
 	if err != nil {
 		writeCallError(w, err)
 		return

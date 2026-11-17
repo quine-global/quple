@@ -204,3 +204,36 @@ func TestHeartbeatCountsAsPresence(t *testing.T) {
 		t.Fatalf("bob in a call shows offline: %v", c)
 	}
 }
+
+func TestRingingAndCancel(t *testing.T) {
+	srv := newTestApp(t)
+	_, call := do(t, srv, "alice", "POST", "/call", `{"to":"bob"}`)
+	path := "/calls/" + call["meetingId"].(string)
+
+	// Bob's phone, ringing, checks the call: that isn't answering it.
+	if status, st := do(t, srv, "bob", "GET", path, ""); status != 200 || st["peer"] != "alice" || st["endedBy"] != "" {
+		t.Fatalf("callee status: %d %v", status, st)
+	}
+	if _, st := do(t, srv, "alice", "POST", path+"/heartbeat", ""); st["peerSeenMsAgo"] != nil {
+		t.Fatalf("checking the call counted as answering: %v", st)
+	}
+	if status, _ := do(t, srv, "eve", "GET", path, ""); status != 403 {
+		t.Errorf("stranger status: %d", status)
+	}
+
+	// Alice gives up; bob's ringing phone sees it.
+	do(t, srv, "alice", "POST", path+"/hangup", "")
+	if _, st := do(t, srv, "bob", "GET", path, ""); st["endedBy"] != "alice" {
+		t.Fatalf("after cancel: %v", st)
+	}
+}
+
+func TestCancelledCallIsNotDelivered(t *testing.T) {
+	srv := newTestApp(t)
+	_, call := do(t, srv, "alice", "POST", "/call", `{"to":"bob"}`)
+	do(t, srv, "alice", "POST", "/calls/"+call["meetingId"].(string)+"/hangup", "")
+	// Bob's app polls only now: there's nothing to ring for.
+	if _, poll := do(t, srv, "bob", "GET", "/poll", ""); len(poll["invites"].([]any)) != 0 {
+		t.Fatalf("cancelled call delivered: %v", poll)
+	}
+}

@@ -103,6 +103,14 @@ export function ring(from: string, onAnswer: (callUUID: string) => void, onDecli
   return id;
 }
 
+/** The caller gave up while it rang: stop ringing, as when it rings out. */
+export function stopRinging(id: string) {
+  const r = takeRinging(id);
+  if (!r) return;
+  RNCallKeep.reportEndCallWithUUID(id, CONSTANTS.END_CALL_REASONS.REMOTE_ENDED);
+  r.onDecline();
+}
+
 /** Reports a call Quple is placing to `to`; returns its id. */
 export function startOutgoing(to: string): string {
   const id = uuid();

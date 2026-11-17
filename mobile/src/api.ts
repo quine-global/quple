@@ -44,6 +44,10 @@ export class Api {
   call(to: string, jitsiUrl?: string) {
     return this.request<Call>('/call', { method: 'POST', body: JSON.stringify({ to, jitsiUrl }) });
   }
+  /** The call, without counting as a heartbeat (answering): for a phone that's ringing. */
+  callStatus(meetingId: string) {
+    return this.request<CallStatus>(`/calls/${encodeURIComponent(meetingId)}`);
+  }
   heartbeat(meetingId: string) {
     return this.request<CallStatus>(`/calls/${encodeURIComponent(meetingId)}/heartbeat`, { method: 'POST' });
   }

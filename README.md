@@ -28,7 +28,17 @@ other and agree on a meeting room.
    own WebRTC signaling (XMPP + the videobridge) takes it from there;
    Quple's server never touches media or call content, it only introduces
    two clients to the same room name.
-5. **Ending.** Jitsi doesn't end a call when the other side leaves, so the
+5. **Ringing** (iPhone app). The caller doesn't join the Jitsi room until
+   the call is answered: it shows "Calling bob" and sends heartbeats
+   (`/calls/{id}/heartbeat`). The callee's phone rings for 45 s, checking
+   the call meanwhile (`GET /calls/{id}`, which isn't answering) and
+   stopping if the caller cancels. Answering opens the callee's call screen,
+   whose first heartbeat tells the caller's app, which joins the room then.
+   Declining or ringing out hangs up, and the caller's app goes back to
+   "bob didn't answer"; so it does after 60 s with no answer at all (the
+   callee's app wasn't open). An invite for a call that's already been
+   hung up isn't delivered.
+6. **Ending.** Jitsi doesn't end a call when the other side leaves, so the
    iPhone app's call screen does, on any Jitsi server
    ([`mobile/src/watchdog.ts`](mobile/src/watchdog.ts)). Every 3 s it sends
    a heartbeat to the signaling server, which answers whether the other
@@ -240,7 +250,8 @@ caller's username is the token's `preferred_username`.
 | `POST /register`              | —                                       | `{"ok":true}` — marks you online |
 | `POST /call`                  | `{"to":"bob","jitsiUrl":"https://meet.jit.si"}` | `{"meetingId":…,"jitsiUrl":…}` — `jitsiUrl` is optional (default `DEFAULT_JITSI`) |
 | `GET /poll`                   | —                                       | `{"invites":[{"from":…,"meetingId":…,"jitsiUrl":…,"createdAt":…}]}` — also marks you online, and clears delivered invites |
-| `POST /calls/{meetingId}/heartbeat` | —                                 | `{"peer":"bob","peerSeenMsAgo":1200,"endedBy":""}` — sent every few seconds from a call screen; `peerSeenMsAgo` is `null` until the other side's call screen opens (not answered), `endedBy` is who hung up. Also marks you online. Only the call's two parties: 403 otherwise, 404 for unknown or long-idle calls |
+| `GET /calls/{meetingId}`            | —                                 | the same as a heartbeat's answer, without counting as one: for a phone that's ringing (has the caller given up?) |
+| `POST /calls/{meetingId}/heartbeat` | —                                 | `{"peer":"bob","peerSeenMsAgo":1200,"endedBy":""}` — sent every few seconds from a call screen; `peerSeenMsAgo` is `null` until the other side's call screen opens (not answered; the caller's call screen is up from the start), `endedBy` is who hung up. Also marks you online. Only the call's two parties: 403 otherwise, 404 for unknown or long-idle calls |
 | `POST /calls/{meetingId}/hangup`    | —                                 | `{"ok":true}` — ends the call for both sides (hanging up, declining, or the ring running out) |
 | `GET /contacts`               | —                                       | `{"contacts":[{"username":…,"online":true}]}` |
 | `POST /contacts`              | `{"username":"bob"}`                    | the added contact |

@@ -27,10 +27,10 @@ import { JitsiMeeting, JitsiRefProps } from '@jitsi/react-native-sdk';
 
 import { Api, CallStatus, Contact, Invite, Me } from './src/api';
 import { SignedOut, restore, signIn, signOut } from './src/auth';
-import { connected, finish, onHangUp, ring, setupCallKit, startOutgoing } from './src/callkit';
+import { connected, finish, onHangUp, ring, setupCallKit, startOutgoing, stopRinging } from './src/callkit';
 import { POLL_MS } from './src/config';
 import { Settings, cleanUrl, loadSettings, saveSettings } from './src/settings';
-import { decide } from './src/watchdog';
+import { NO_ANSWER_MS, decide } from './src/watchdog';
 
 /**
  * A call to join: where, the name to show in it, and its CallKit call
@@ -42,6 +42,13 @@ type Meeting = {
   displayName: string;
   callUUID: string;
   outgoing: boolean;
+  /** Who's on the other end. */
+  peer: string;
+  /**
+   * An outgoing call rings (RingingScreen) until the other side answers;
+   * only then does the app join the Jitsi room. Incoming calls start answered.
+   */
+  answered: boolean;
 };
 
 export default function App() {
@@ -76,6 +83,23 @@ export default function App() {
     return (
       <Shell c={c} dark={dark}>
         <ActivityIndicator style={{ flex: 1 }} />
+      </Shell>
+    );
+  }
+
+  if (meeting && !meeting.answered) {
+    return (
+      <Shell c={c} dark={dark}>
+        <RingingScreen
+          c={c}
+          meeting={meeting}
+          serverUrl={settings.serverUrl}
+          onAnswered={() => setMeeting({ ...meeting, answered: true })}
+          onEnd={why => {
+            setMeeting(null);
+            setNotice(why ?? '');
+          }}
+        />
       </Shell>
     );
   }
@@ -211,22 +235,43 @@ function HomeScreen(props: {
     (inv: Invite) => {
       if (seen.current.has(inv.meetingId)) return;
       seen.current.add(inv.meetingId);
-      ring(
+      // While it rings, check whether the caller gave up (GET, which
+      // doesn't count as answering), whatever the app's state: iOS's
+      // incoming-call screen takes the app out of the foreground.
+      let watch: ReturnType<typeof setInterval> | null = null;
+      const stopWatching = () => {
+        if (watch) clearInterval(watch);
+        watch = null;
+      };
+      const id = ring(
         inv.from,
-        callUUID =>
+        callUUID => {
+          stopWatching();
           onJoin({
             jitsiUrl: inv.jitsiUrl,
             meetingId: inv.meetingId,
             displayName: meRef.current?.username ?? '',
             callUUID,
             outgoing: false,
-          }),
+            peer: inv.from,
+            answered: true,
+          });
+        },
         () => {
+          stopWatching();
           setStatus(`Missed a call from ${inv.from}`);
-          // Declined, or rang out: the caller's app stops waiting.
+          // Declined, or rang out: the caller's app stops ringing.
           api.hangUp(inv.meetingId).catch(() => {});
         },
       );
+      watch = setInterval(() => {
+        api
+          .callStatus(inv.meetingId)
+          .then(st => {
+            if (st.endedBy) stopRinging(id);
+          })
+          .catch(() => {});
+      }, POLL_MS);
     },
     [api, onJoin],
   );
@@ -283,6 +328,8 @@ function HomeScreen(props: {
         displayName: me?.username ?? '',
         callUUID,
         outgoing: true,
+        peer: to,
+        answered: false,
       });
     } catch (e) {
       finish(callUUID);
@@ -379,6 +426,77 @@ function HomeScreen(props: {
   );
 }
 
+// ---- Ringing: an outgoing call, until it's answered ---------------------------
+
+// The caller stays out of the Jitsi room while the other phone rings. Its
+// heartbeats (Quple's server) say when the other side's call screen opens,
+// which is answering; a decline or ring-out arrives as their hang-up.
+function RingingScreen(props: {
+  c: Colors;
+  meeting: Meeting;
+  serverUrl: string;
+  onAnswered: () => void;
+  onEnd: (notice?: string) => void;
+}) {
+  const { c, meeting, onAnswered, onEnd } = props;
+  const api = useRef(new Api(props.serverUrl)).current;
+  const done = useRef(false);
+  // A ref, so re-rendering (new callbacks from App) doesn't restart the clock.
+  const startedAt = useRef(Date.now());
+
+  // Hang up the ringing call: tell the callee's phone (it stops ringing)
+  // and iOS.
+  const stop = useCallback(
+    (notice?: string) => {
+      if (done.current) return;
+      done.current = true;
+      api.hangUp(meeting.meetingId).catch(() => {});
+      finish(meeting.callUUID);
+      onEnd(notice);
+    },
+    [api, meeting.meetingId, meeting.callUUID, onEnd],
+  );
+
+  // Ended from iOS's call screen.
+  useEffect(() => onHangUp(meeting.callUUID, () => stop()), [meeting.callUUID, stop]);
+
+  useEffect(() => {
+    let busy = false;
+    const tick = async () => {
+      if (busy || done.current) return;
+      busy = true;
+      try {
+        const st = await api.heartbeat(meeting.meetingId);
+        if (done.current) return;
+        if (st.endedBy && st.endedBy !== meeting.displayName) {
+          stop(`${meeting.peer} didn't answer`);
+        } else if (st.peerSeenMsAgo !== null) {
+          done.current = true;
+          onAnswered();
+        }
+      } catch (e: any) {
+        console.log(`[quple] ringing: heartbeat failed: ${e?.message ?? e}`);
+      } finally {
+        busy = false;
+      }
+      // Their phone rang out without telling us (it never got the call).
+      if (!done.current && Date.now() - startedAt.current > NO_ANSWER_MS) stop(`${meeting.peer} didn't answer`);
+    };
+    tick();
+    const timer = setInterval(tick, POLL_MS);
+    return () => clearInterval(timer);
+  }, [api, meeting, onAnswered, stop]);
+
+  return (
+    <View style={styles.center}>
+      <Text style={[styles.muted, { color: c.muted }]}>Calling</Text>
+      <Text style={[styles.hero, { color: c.text }]}>{meeting.peer}</Text>
+      <ActivityIndicator style={styles.ringing} />
+      <Button c={c} title="Cancel" onPress={() => stop()} />
+    </View>
+  );
+}
+
 // ---- The call: Jitsi Meet SDK -----------------------------------------------
 
 function CallScreen(props: { meeting: Meeting; serverUrl: string; onEnd: (notice?: string) => void }) {
@@ -433,7 +551,7 @@ function CallScreen(props: { meeting: Meeting; serverUrl: string; onEnd: (notice
   // decide() on that and on the room.
   useEffect(() => {
     let busy = false;
-    const timer = setInterval(async () => {
+    const tick = async () => {
       if (busy || ended.current) return;
       busy = true;
       const s = w.current;
@@ -466,7 +584,11 @@ function CallScreen(props: { meeting: Meeting; serverUrl: string; onEnd: (notice
         // one unmounts and leaves.
         setAttempt(current.current);
       }
-    }, POLL_MS);
+    };
+    // The first one now: for the callee, it's what tells the caller's
+    // phone the call was answered.
+    tick();
+    const timer = setInterval(tick, POLL_MS);
     return () => clearInterval(timer);
   }, [api, meeting.meetingId, meeting.displayName, end]);
 
@@ -703,5 +825,6 @@ const styles = StyleSheet.create({
   name: { flex: 1, fontSize: 16 },
   remove: { fontSize: 16, paddingHorizontal: 4 },
   center: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: 24 },
+  ringing: { marginVertical: 24 },
   error: { marginBottom: 16, textAlign: 'center' },
 });

@@ -146,12 +146,30 @@ func (s *Store) CallHeartbeat(meetingID, me string) (CallStatus, error) {
 	c.seen[me] = now
 	c.touched = now
 	s.lastSeen[me] = now
+	return c.status(peer, now), nil
+}
+
+// CallStatus returns meetingID as me sees it, without counting as a
+// heartbeat: a callee's phone checks it while ringing (has the caller
+// given up?), and a heartbeat would mean "answered".
+func (s *Store) CallStatus(meetingID, me string) (CallStatus, error) {
+	now := time.Now()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	c, peer, err := s.party(meetingID, me, now)
+	if err != nil {
+		return CallStatus{}, err
+	}
+	return c.status(peer, now), nil
+}
+
+func (c *call) status(peer string, now time.Time) CallStatus {
 	st := CallStatus{Peer: peer, EndedBy: c.endedBy}
 	if t, ok := c.seen[peer]; ok {
 		ms := now.Sub(t).Milliseconds()
 		st.PeerSeenMsAgo = &ms
 	}
-	return st, nil
+	return st
 }
 
 // HangUp ends meetingID for both sides; the first to hang up is recorded.
@@ -171,8 +189,9 @@ func (s *Store) HangUp(meetingID, me string) error {
 }
 
 // DrainInvites returns and clears every pending invite for username,
-// filtering out anything older than inviteTTL. Polling also counts as
-// presence, so it touches lastSeen too.
+// filtering out anything older than inviteTTL or already hung up (the
+// caller gave up before this poll). Polling also counts as presence, so it
+// touches lastSeen too.
 func (s *Store) DrainInvites(username string) []Invite {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -184,6 +203,9 @@ func (s *Store) DrainInvites(username string) []Invite {
 	cutoff := time.Now().Add(-inviteTTL)
 	fresh := make([]Invite, 0, len(pending))
 	for _, inv := range pending {
+		if c, ok := s.calls[inv.MeetingID]; ok && c.endedBy != "" {
+			continue
+		}
 		if inv.CreatedAt.After(cutoff) {
 			fresh = append(fresh, inv)
 		}
