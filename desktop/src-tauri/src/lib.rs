@@ -4,7 +4,8 @@ mod updater;
 
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::Arc;
 use tauri::webview::NewWindowResponse;
 use tauri::{Emitter, Manager, Url, WebviewUrl, WebviewWindowBuilder};
 
@@ -251,6 +252,69 @@ fn jitsi_sign_out(app: tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+/// Reports the meeting's state to the app through the page's title, the one
+/// channel out of the meeting window that needs no IPC access (the window
+/// has none: see open_meeting). Jitsi Meet's web app keeps its state in
+/// `window.APP`: `store` (Redux; a conference there means joined) and
+/// `conference.membersCount` (everyone, us included). Read every 1.5 s;
+/// the title only changes, and so only reports, when the state does.
+const MEETING_STATE_SCRIPT: &str = r#"
+(function () {
+  if (window.top !== window) return;
+  setInterval(function () {
+    try {
+      var app = window.APP;
+      if (!app || !app.store || !app.conference) return;
+      var st = app.store.getState()['features/base/conference'];
+      var joined = !!(st && st.conference);
+      var remotes = 0;
+      if (joined) {
+        try { remotes = Math.max(0, app.conference.membersCount - 1); } catch (e) {}
+      }
+      var title = 'quple-state:' + JSON.stringify({ joined: joined, remotes: remotes });
+      if (document.title !== title) document.title = title;
+    } catch (e) {}
+  }, 1500);
+})();
+"#;
+const MEETING_STATE_PREFIX: &str = "quple-state:";
+
+/// A meeting window's state, for the main window's watchdog (app.js).
+#[derive(Serialize, Clone)]
+struct MeetingState {
+    room: String,
+    joined: bool,
+    remotes: u32,
+}
+
+/// A meeting window closed, or Jitsi left the room (its hang-up button).
+#[derive(Serialize, Clone)]
+struct MeetingClosed {
+    room: String,
+}
+
+fn meeting_label(room: &str) -> String {
+    format!("meeting-{room}")
+}
+
+/// Ends a meeting: closes its window (the app hung up, or the call ended).
+#[tauri::command]
+fn close_meeting(app: tauri::AppHandle, room: String) -> Result<(), String> {
+    if let Some(w) = app.get_webview_window(&meeting_label(&room)) {
+        w.close().map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+/// Rejoins a meeting: reloads its page, which joins the same room afresh.
+#[tauri::command]
+fn rejoin_meeting(app: tauri::AppHandle, room: String) -> Result<(), String> {
+    match app.get_webview_window(&meeting_label(&room)) {
+        Some(w) => w.eval("location.reload()").map_err(|e| e.to_string()),
+        None => Err(format!("no meeting window for {room}")),
+    }
+}
+
 /// Opens (or focuses) a dedicated window for a Jitsi meeting. The meeting
 /// window is plain remote web content with no Tauri capability grants, so
 /// third-party JS running inside Jitsi never gets access to the app's IPC
@@ -261,6 +325,7 @@ fn open_meeting(
     jitsi_base: String,
     room: String,
     display_name: String,
+    peer: Option<String>,
 ) -> Result<(), String> {
     let room = room.trim().to_string();
     if room.is_empty() {
@@ -273,7 +338,7 @@ fn open_meeting(
         _ => return Err(format!("{jitsi_base} isn't a Jitsi Meet server URL")),
     }
 
-    let label = format!("meeting-{room}");
+    let label = meeting_label(&room);
     if let Some(existing) = app.get_webview_window(&label) {
         existing.set_focus().map_err(|e| e.to_string())?;
         return Ok(());
@@ -302,22 +367,72 @@ fn open_meeting(
         Url::parse(&url).map_err(|_| format!("invalid meeting URL for {base}/{room}"))?
     };
 
+    let title = match peer.as_deref().map(str::trim) {
+        Some(p) if !p.is_empty() => format!("Quple — {p}"),
+        _ => format!("Quple — {room}"),
+    };
     let app_ = app.clone();
+    let room_ = room.clone();
     let room_path = format!("/{room}");
-    web_window(&app, label, url)
-        .title(format!("Quple — {room}"))
+    // Set once the page has reached the room: leaving it after that is
+    // Jitsi's hang-up button (it goes to its close or welcome page).
+    let reached = Arc::new(AtomicBool::new(false));
+    let app_title = app.clone();
+    let room_title = room.clone();
+    let title_ = title.clone();
+    let window = web_window(&app, label, url)
+        .title(&title)
         .inner_size(1000.0, 700.0)
         .min_inner_size(480.0, 360.0)
+        .initialization_script(MEETING_STATE_SCRIPT)
+        .on_document_title_changed(move |window, page_title| {
+            let Some(json) = page_title.strip_prefix(MEETING_STATE_PREFIX) else {
+                return;
+            };
+            // Keep the window's own title, whatever the page's says.
+            let _ = window.set_title(&title_);
+            let Ok(v) = serde_json::from_str::<serde_json::Value>(json) else {
+                return;
+            };
+            let state = MeetingState {
+                room: room_title.clone(),
+                joined: v["joined"].as_bool().unwrap_or(false),
+                remotes: v["remotes"].as_u64().unwrap_or(0) as u32,
+            };
+            let _ = app_title.emit_to("main", "meeting-state", state);
+        })
         .on_navigation(move |url| {
-            // Reaching the room means any sign-in popup has done its job.
             if url.path() == room_path {
+                reached.store(true, Ordering::Relaxed);
+                // Reaching the room means any sign-in popup has done its job.
                 let app = app_.clone();
                 let _ = app_.run_on_main_thread(move || close_popups(&app));
+                return true;
             }
-            true
+            if !reached.load(Ordering::Relaxed) {
+                return true;
+            }
+            // Hung up in Jitsi: the call's over, close its window instead.
+            let app = app_.clone();
+            let room = room_.clone();
+            let _ = app_.run_on_main_thread(move || {
+                if let Some(w) = app.get_webview_window(&meeting_label(&room)) {
+                    let _ = w.close();
+                }
+            });
+            false
         })
         .build()
         .map_err(|e| format!("could not open meeting window: {e}"))?;
+
+    // However it closes (its close button, Jitsi's hang-up, the app ending
+    // the call), the main window hears of it.
+    let app_closed = app.clone();
+    window.on_window_event(move |event| {
+        if let tauri::WindowEvent::Destroyed = event {
+            let _ = app_closed.emit_to("main", "meeting-closed", MeetingClosed { room: room.clone() });
+        }
+    });
 
     Ok(())
 }
@@ -346,6 +461,8 @@ pub fn run() {
             load_config,
             save_config,
             open_meeting,
+            close_meeting,
+            rejoin_meeting,
             jitsi_signed_in,
             jitsi_sign_in,
             jitsi_sign_out,

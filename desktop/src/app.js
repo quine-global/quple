@@ -1,6 +1,7 @@
 import { h, render } from "preact";
 import { useCallback, useEffect, useRef, useState } from "preact/hooks";
 import htm from "htm";
+import { decide, NO_ANSWER_MS } from "./watchdog.js";
 
 const html = htm.bind(h);
 const { invoke } = window.__TAURI__.core;
@@ -14,6 +15,8 @@ const DEFAULTS = {
 
 const POLL_INTERVAL_MS = 3000;
 const CONTACTS_REFRESH_MS = 4000;
+/** An incoming call rings this long, as on the iPhone (CallKit). */
+const INCOMING_RING_MS = 45_000;
 
 // ---- Backend helpers ---------------------------------------------------------
 
@@ -75,8 +78,26 @@ function jitsiHost(url) {
  */
 const isPublicJitsi = (url) => jitsiHost(url) === "meet.jit.si";
 
-function openMeeting(me, jitsiUrl, meetingId) {
-  return invoke("open_meeting", { jitsiBase: jitsiUrl, room: meetingId, displayName: me.username });
+function openMeeting(me, jitsiUrl, meetingId, peer) {
+  return invoke("open_meeting", { jitsiBase: jitsiUrl, room: meetingId, displayName: me.username, peer });
+}
+
+const callPath = (meetingId) => `/calls/${encodeURIComponent(meetingId)}`;
+
+/** The watchdog's state for a call that's just been (re)joined (watchdog.js). */
+function newWatch() {
+  const now = Date.now();
+  return {
+    startedAt: now,
+    attemptStartedAt: now,
+    rejoins: 0,
+    joined: false,
+    remotes: 0,
+    aloneSince: null,
+    peerSince: null,
+    status: null,
+    statusAt: null,
+  };
 }
 
 // ---- App: gates everything behind Quine ------------------------------------
@@ -297,6 +318,10 @@ function Dashboard({ me, api, jitsiBase, jitsiSignedIn, onJitsiBase, onSettings 
   const [contacts, setContacts] = useState(null);
   const [status, setStatus] = useState({ text: "", state: "" });
   const [invites, setInvites] = useState([]);
+  const invitesRef = useRef(invites);
+  invitesRef.current = invites;
+  // Why the last call ended, when it wasn't you.
+  const [notice, setNotice] = useState("");
   const [target, setTarget] = useState("");
   // The Jitsi server the next call happens on; whoever answers joins it there.
   const [server, setServer] = useState(jitsiBase);
@@ -316,21 +341,162 @@ function Dashboard({ me, api, jitsiBase, jitsiSignedIn, onJitsiBase, onSettings 
   useInterval(async () => {
     try {
       const { invites } = await api("/poll");
-      if (invites && invites.length > 0) setInvites((queue) => [...queue, ...invites]);
+      if (invites && invites.length > 0) {
+        const now = Date.now();
+        setInvites((queue) => [...queue, ...invites.map((inv) => ({ ...inv, receivedAt: now }))]);
+      }
     } catch (_) {
       // Failures are already surfaced by the contacts refresh above.
     }
   }, POLL_INTERVAL_MS);
 
+  // ---- The call: ringing out, then in its meeting window ----
+  //
+  // As on the iPhone (README "Ringing", "Ending"): an outgoing call rings
+  // here until the other side's call screen sends its first heartbeat, and
+  // only then opens the Jitsi window. During the call, a heartbeat every
+  // few seconds and the room's state (reported by the meeting window,
+  // lib.rs) go to the watchdog, which ends or rejoins the call.
+
+  /** {meetingId, peer, jitsiUrl, outgoing, phase: "ringing" | "in-call", startedAt}, or null. */
+  const [active, setActive] = useState(null);
+  const activeRef = useRef(null);
+  const watch = useRef(null);
+  const ticking = useRef(false);
+
+  const setCall = (c) => {
+    activeRef.current = c;
+    setActive(c);
+  };
+
+  /** Ends the call: tells the server (the other app ends it too) and closes its window. */
+  const endCall = (why = "", { closeWindow = true } = {}) => {
+    const c = activeRef.current;
+    if (!c) return;
+    setCall(null);
+    watch.current = null;
+    api(`${callPath(c.meetingId)}/hangup`, { method: "POST" }).catch(() => {});
+    if (closeWindow) invoke("close_meeting", { room: c.meetingId }).catch(() => {});
+    setNotice(why);
+  };
+  const endCallRef = useRef(endCall);
+  endCallRef.current = endCall;
+
+  /** Answered: open the meeting window, and start watching. */
+  const startInCall = async (c) => {
+    const next = { ...c, phase: "in-call" };
+    setCall(next);
+    watch.current = newWatch();
+    // A heartbeat now: for the callee, it's what tells the caller's app the
+    // call was answered.
+    api(`${callPath(c.meetingId)}/heartbeat`, { method: "POST" }).catch(() => {});
+    try {
+      await openMeeting(me, c.jitsiUrl, c.meetingId, c.peer);
+    } catch (err) {
+      endCall(`Couldn't open the call: ${err}`, { closeWindow: false });
+    }
+  };
+
+  useInterval(async () => {
+    const c = activeRef.current;
+    if (!c || ticking.current) return;
+    ticking.current = true;
+    try {
+      let st = null;
+      try {
+        st = await api(`${callPath(c.meetingId)}/heartbeat`, { method: "POST" });
+      } catch (err) {
+        // The server down, or restarted and forgot the call: go on what the
+        // room says.
+        console.log(`quple: heartbeat failed: ${err.message}`);
+      }
+      if (activeRef.current !== c) return; // ended meanwhile
+      if (c.phase === "ringing") {
+        if (st && st.endedBy && st.endedBy !== me.username) {
+          endCall(`${c.peer} didn't answer`, { closeWindow: false });
+        } else if (st && st.peerSeenMsAgo !== null) {
+          await startInCall(c);
+        } else if (Date.now() - c.startedAt > NO_ANSWER_MS) {
+          endCall(`${c.peer} didn't answer`, { closeWindow: false });
+        }
+        return;
+      }
+      const w = watch.current;
+      if (st) {
+        w.status = st;
+        w.statusAt = Date.now();
+        if (st.peerSeenMsAgo !== null && w.peerSince === null) w.peerSince = Date.now();
+      }
+      const v = decide({ ...w, now: Date.now(), me: me.username });
+      if (v.action === "end") {
+        console.log(`quple: ending the call: ${v.reason}`);
+        endCall(v.reason);
+      } else if (v.action === "rejoin") {
+        console.log(`quple: rejoining (${v.why})`);
+        Object.assign(w, { rejoins: w.rejoins + 1, joined: false, remotes: 0, aloneSince: null, attemptStartedAt: Date.now() });
+        invoke("rejoin_meeting", { room: c.meetingId }).catch(() => {});
+      }
+    } finally {
+      ticking.current = false;
+    }
+  }, POLL_INTERVAL_MS);
+
+  // The meeting window: who's in the room, and whether it closed.
+  useEffect(() => {
+    const unState = listen("meeting-state", (e) => {
+      const c = activeRef.current;
+      const w = watch.current;
+      if (!c || !w || e.payload.room !== c.meetingId) return;
+      const { joined, remotes } = e.payload;
+      w.joined = joined;
+      w.remotes = remotes;
+      if (!joined || remotes > 0) w.aloneSince = null;
+      else if (w.aloneSince === null) w.aloneSince = Date.now();
+    });
+    // Its close button, or Jitsi's hang-up: you hung up.
+    const unClosed = listen("meeting-closed", (e) => {
+      const c = activeRef.current;
+      if (c && c.phase === "in-call" && e.payload.room === c.meetingId) endCallRef.current("", { closeWindow: false });
+    });
+    return () => {
+      unState.then((f) => f());
+      unClosed.then((f) => f());
+    };
+  }, []);
+
+  // An incoming call stops ringing when the caller gives up (GET, which
+  // isn't answering), or after INCOMING_RING_MS.
+  const dropInvite = (inv, why) => {
+    setInvites((queue) => queue.filter((x) => x !== inv));
+    api(`${callPath(inv.meetingId)}/hangup`, { method: "POST" }).catch(() => {});
+    if (why) setNotice(why);
+  };
+  useInterval(async () => {
+    const inv = invitesRef.current[0];
+    if (!inv) return;
+    let gone = Date.now() - inv.receivedAt > INCOMING_RING_MS;
+    if (!gone) {
+      try {
+        gone = !!(await api(callPath(inv.meetingId))).endedBy;
+      } catch (_) {}
+    }
+    if (gone && invitesRef.current[0] === inv) dropInvite(inv, `Missed a call from ${inv.from}`);
+  }, POLL_INTERVAL_MS);
+
   const call = async (who) => {
-    who = who.trim();
+    who = who.trim().toLowerCase();
     if (!who) return;
+    if (activeRef.current) {
+      setNotice("Hang up the call you're in first.");
+      return;
+    }
+    setNotice("");
     try {
       const { meetingId, jitsiUrl } = await api("/call", {
         method: "POST",
         body: JSON.stringify({ to: who, jitsiUrl: server.trim() || me.defaultJitsiUrl }),
       });
-      await openMeeting(me, jitsiUrl, meetingId);
+      setCall({ meetingId, peer: who, jitsiUrl, outgoing: true, phase: "ringing", startedAt: Date.now() });
       setServer(jitsiUrl);
       if (jitsiUrl !== jitsiBase) onJitsiBase(jitsiUrl);
     } catch (err) {
@@ -424,6 +590,20 @@ function Dashboard({ me, api, jitsiBase, jitsiSignedIn, onJitsiBase, onSettings 
         </p>`}
       </div>
 
+      ${notice && html`<p class="notice">${notice}</p>`}
+
+      ${active &&
+      active.phase === "in-call" &&
+      html`<div class="card in-call">
+        <span>In a call with <strong>${active.peer}</strong></span>
+        <div class="button-row">
+          <button type="button" class="secondary" onClick=${() => openMeeting(me, active.jitsiUrl, active.meetingId, active.peer)}>
+            Show
+          </button>
+          <button type="button" onClick=${() => endCall()}>Hang up</button>
+        </div>
+      </div>`}
+
       <div class="card">
         <div class="list-header">
           <span>Contacts</span>
@@ -457,6 +637,19 @@ function Dashboard({ me, api, jitsiBase, jitsiSignedIn, onJitsiBase, onSettings 
       <p class="muted status-text">${status.text}</p>
     </section>
 
+    ${active &&
+    active.phase === "ringing" &&
+    html`<div class="overlay">
+      <div class="card call-card">
+        <div class="ringing">Calling</div>
+        <div class="incoming-from">${active.peer}</div>
+        <div class="muted">on ${jitsiHost(active.jitsiUrl)}</div>
+        <div class="button-row">
+          <button type="button" class="secondary" onClick=${() => endCall("", { closeWindow: false })}>Cancel</button>
+        </div>
+      </div>
+    </div>`}
+
     ${incoming &&
     html`<${IncomingCall}
       from=${incoming.from}
@@ -465,11 +658,12 @@ function Dashboard({ me, api, jitsiBase, jitsiSignedIn, onJitsiBase, onSettings 
       onAdd=${() => addContact(incoming.from)}
       onAccept=${() => {
         setInvites(rest);
-        openMeeting(me, incoming.jitsiUrl, incoming.meetingId).catch((err) =>
-          setStatus({ text: `Couldn't join ${incoming.from}: ${err}`, state: "offline" }),
-        );
+        setNotice("");
+        // One call at a time: answering hangs up the one you're in.
+        if (activeRef.current) endCall();
+        startInCall({ meetingId: incoming.meetingId, peer: incoming.from, jitsiUrl: incoming.jitsiUrl, outgoing: false });
       }}
-      onDecline=${() => setInvites(rest)}
+      onDecline=${() => dropInvite(incoming, "")}
     />`}
   `;
 }

@@ -28,7 +28,7 @@ other and agree on a meeting room.
    own WebRTC signaling (XMPP + the videobridge) takes it from there;
    Quple's server never touches media or call content, it only introduces
    two clients to the same room name.
-5. **Ringing** (iPhone app). The caller doesn't join the Jitsi room until
+5. **Ringing.** The caller doesn't join the Jitsi room until
    the call is answered: it shows "Calling bob" and sends heartbeats
    (`/calls/{id}/heartbeat`). The callee's phone rings for 45 s, checking
    the call meanwhile (`GET /calls/{id}`, which isn't answering) and
@@ -49,7 +49,15 @@ other and agree on a meeting room.
    into the room or the other side is in the call but not in its room.
    Quple's server being down never ends a call Jitsi is still carrying.
    Hanging up, declining or letting it ring out sends `/hangup`, so the
-   other app ends too. (The desktop app doesn't do this yet.)
+   other app ends too.
+
+   The desktop app does the same with a copy of the watchdog
+   (`desktop/src/watchdog.js`, tested with `node --test
+   desktop/test/*.test.mjs`). Its meeting window is plain web content with
+   no access to the app, so a script injected into it reports the room
+   (joined, how many others, from Jitsi's `window.APP`) through the page
+   title, which the app reads (`desktop/src-tauri/src/lib.rs`). Closing
+   that window, or Jitsi's hang-up button, hangs up.
 
 Every request to the signaling server carries a Quine access token; the
 server takes the caller's username (the token's `preferred_username`) from

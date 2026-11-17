@@ -339,3 +339,20 @@ button.link-btn {
 [hidden] {
   display: none !important;
 }
+
+/* Why the last call ended. */
+.notice {
+  margin: 0 0 12px;
+  font-size: 14px;
+  opacity: 0.8;
+  text-align: center;
+}
+
+/* The call you're in, while its meeting window is open. */
+.in-call {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
