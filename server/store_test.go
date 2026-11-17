@@ -1,6 +1,9 @@
 package main
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 func TestPlaceCallAndDrainInvites(t *testing.T) {
 	s := NewStore()
@@ -35,5 +38,14 @@ func TestPresence(t *testing.T) {
 	s.DrainInvites("bob") // polling counts as presence
 	if !s.IsOnline("bob") {
 		t.Fatal("polling user not reported online")
+	}
+}
+
+func TestIdleCallsAreForgotten(t *testing.T) {
+	s := NewStore()
+	inv := s.PlaceCall("bob", Invite{From: "alice", MeetingID: newMeetingID()})
+	s.calls[inv.MeetingID].touched = time.Now().Add(-callIdleTTL - time.Second)
+	if _, err := s.CallHeartbeat(inv.MeetingID, "alice"); err != errNoCall {
+		t.Fatalf("heartbeat on an idle call: %v, want errNoCall", err)
 	}
 }

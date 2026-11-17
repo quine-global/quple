@@ -28,6 +28,18 @@ other and agree on a meeting room.
    own WebRTC signaling (XMPP + the videobridge) takes it from there;
    Quple's server never touches media or call content, it only introduces
    two clients to the same room name.
+5. **Ending.** Jitsi doesn't end a call when the other side leaves, so the
+   iPhone app's call screen does, on any Jitsi server
+   ([`mobile/src/watchdog.ts`](mobile/src/watchdog.ts)). Every 3 s it sends
+   a heartbeat to the signaling server, which answers whether the other
+   side hung up (or declined) and when their call screen last sent one, and
+   it watches who's in the Jitsi room. It ends the call when the other side
+   hangs up, hasn't answered after 60 s, or is gone from both the room and
+   the server (45 s), and rejoins (remounts the Jitsi SDK) when it never got
+   into the room or the other side is in the call but not in its room.
+   Quple's server being down never ends a call Jitsi is still carrying.
+   Hanging up, declining or letting it ring out sends `/hangup`, so the
+   other app ends too. (The desktop app doesn't do this yet.)
 
 Every request to the signaling server carries a Quine access token; the
 server takes the caller's username (the token's `preferred_username`) from
@@ -228,6 +240,8 @@ caller's username is the token's `preferred_username`.
 | `POST /register`              | —                                       | `{"ok":true}` — marks you online |
 | `POST /call`                  | `{"to":"bob","jitsiUrl":"https://meet.jit.si"}` | `{"meetingId":…,"jitsiUrl":…}` — `jitsiUrl` is optional (default `DEFAULT_JITSI`) |
 | `GET /poll`                   | —                                       | `{"invites":[{"from":…,"meetingId":…,"jitsiUrl":…,"createdAt":…}]}` — also marks you online, and clears delivered invites |
+| `POST /calls/{meetingId}/heartbeat` | —                                 | `{"peer":"bob","peerSeenMsAgo":1200,"endedBy":""}` — sent every few seconds from a call screen; `peerSeenMsAgo` is `null` until the other side's call screen opens (not answered), `endedBy` is who hung up. Also marks you online. Only the call's two parties: 403 otherwise, 404 for unknown or long-idle calls |
+| `POST /calls/{meetingId}/hangup`    | —                                 | `{"ok":true}` — ends the call for both sides (hanging up, declining, or the ring running out) |
 | `GET /contacts`               | —                                       | `{"contacts":[{"username":…,"online":true}]}` |
 | `POST /contacts`              | `{"username":"bob"}`                    | the added contact |
 | `DELETE /contacts/{username}` | —                                       | `{"ok":true}` |

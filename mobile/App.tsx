@@ -25,11 +25,12 @@ import Clipboard from '@react-native-clipboard/clipboard';
 import { dump } from './src/logs';
 import { JitsiMeeting, JitsiRefProps } from '@jitsi/react-native-sdk';
 
-import { Api, Contact, Invite, Me } from './src/api';
+import { Api, CallStatus, Contact, Invite, Me } from './src/api';
 import { SignedOut, restore, signIn, signOut } from './src/auth';
 import { connected, finish, onHangUp, ring, setupCallKit, startOutgoing } from './src/callkit';
 import { POLL_MS } from './src/config';
 import { Settings, cleanUrl, loadSettings, saveSettings } from './src/settings';
+import { decide } from './src/watchdog';
 
 /**
  * A call to join: where, the name to show in it, and its CallKit call
@@ -51,6 +52,8 @@ export default function App() {
   const [showSettings, setShowSettings] = useState(false);
   const [error, setError] = useState('');
   const [meeting, setMeeting] = useState<Meeting | null>(null);
+  // Why the last call ended, when it wasn't you: shown on the home screen.
+  const [notice, setNotice] = useState('');
 
   // Settings, then the saved sign-in.
   useEffect(() => {
@@ -78,7 +81,16 @@ export default function App() {
   }
 
   if (meeting) {
-    return <CallScreen meeting={meeting} onEnd={() => setMeeting(null)} />;
+    return (
+      <CallScreen
+        meeting={meeting}
+        serverUrl={settings.serverUrl}
+        onEnd={why => {
+          setMeeting(null);
+          setNotice(why ?? '');
+        }}
+      />
+    );
   }
 
   if (showSettings) {
@@ -140,6 +152,7 @@ export default function App() {
       <HomeScreen
         c={c}
         settings={settings}
+        notice={notice}
         onSettings={() => setShowSettings(true)}
         onSignedOut={onSignedOut}
         onJoin={setMeeting}
@@ -158,6 +171,8 @@ export default function App() {
 function HomeScreen(props: {
   c: Colors;
   settings: Settings;
+  /** Why the last call ended, if it wasn't you. */
+  notice: string;
   onSettings: () => void;
   onSignedOut: () => void;
   onJoin: (m: Meeting) => void;
@@ -169,7 +184,7 @@ function HomeScreen(props: {
   const [contacts, setContacts] = useState<Contact[] | null>(null);
   const [target, setTarget] = useState('');
   const [jitsi, setJitsi] = useState(settings.jitsiUrl);
-  const [status, setStatus] = useState('');
+  const [status, setStatus] = useState(props.notice);
   // Invites already rung, so a poll doesn't ring the same one twice.
   const seen = useRef(new Set<string>());
   const meRef = useRef<Me | null>(null);
@@ -206,10 +221,14 @@ function HomeScreen(props: {
             callUUID,
             outgoing: false,
           }),
-        () => setStatus(`Missed a call from ${inv.from}`),
+        () => {
+          setStatus(`Missed a call from ${inv.from}`);
+          // Declined, or rang out: the caller's app stops waiting.
+          api.hangUp(inv.meetingId).catch(() => {});
+        },
       );
     },
-    [onJoin],
+    [api, onJoin],
   );
 
   // Poll while the app is in the foreground: that's both "I'm online" and
@@ -362,15 +381,41 @@ function HomeScreen(props: {
 
 // ---- The call: Jitsi Meet SDK -----------------------------------------------
 
-function CallScreen({ meeting, onEnd }: { meeting: Meeting; onEnd: () => void }) {
+function CallScreen(props: { meeting: Meeting; serverUrl: string; onEnd: (notice?: string) => void }) {
+  const { meeting, onEnd } = props;
+  const api = useRef(new Api(props.serverUrl)).current;
   const jitsi = useRef<JitsiRefProps>(null);
   const ended = useRef(false);
-  const end = useCallback(() => {
-    if (ended.current) return;
-    ended.current = true;
-    finish(meeting.callUUID);
-    onEnd();
-  }, [meeting.callUUID, onEnd]);
+  // Each (re)start of the SDK is an attempt; events from an earlier one's
+  // teardown are ignored.
+  const [attempt, setAttempt] = useState(0);
+  const current = useRef(0);
+  // What the watchdog (src/watchdog.ts) goes on.
+  const w = useRef({
+    startedAt: Date.now(),
+    attemptStartedAt: Date.now(),
+    rejoins: 0,
+    joined: false,
+    remotes: new Set<string>(),
+    aloneSince: null as number | null,
+    peerSince: null as number | null,
+    status: null as CallStatus | null,
+    statusAt: null as number | null,
+    reportedConnected: false,
+  });
+
+  // Every way a call ends goes through here, and tells Quple's server, so
+  // the other side's app ends it too.
+  const end = useCallback(
+    (notice?: string) => {
+      if (ended.current) return;
+      ended.current = true;
+      api.hangUp(meeting.meetingId).catch(() => {});
+      finish(meeting.callUUID);
+      onEnd(notice);
+    },
+    [api, meeting.meetingId, meeting.callUUID, onEnd],
+  );
   useEffect(() => {
     console.log(`[quple] call screen: ${meeting.outgoing ? 'outgoing' : 'incoming'} ${meeting.jitsiUrl} ${meeting.meetingId}`);
   }, [meeting]);
@@ -382,10 +427,59 @@ function CallScreen({ meeting, onEnd }: { meeting: Meeting; onEnd: () => void })
       end();
     });
   }, [meeting.callUUID, end]);
+
+  // The watchdog: a heartbeat to Quple's server every few seconds (also in
+  // the background, which the CallKit call keeps the app running in), then
+  // decide() on that and on the room.
+  useEffect(() => {
+    let busy = false;
+    const timer = setInterval(async () => {
+      if (busy || ended.current) return;
+      busy = true;
+      const s = w.current;
+      try {
+        s.status = await api.heartbeat(meeting.meetingId);
+        s.statusAt = Date.now();
+        if (s.status.peerSeenMsAgo !== null && s.peerSince === null) s.peerSince = Date.now();
+      } catch (e: any) {
+        // Quple's server down, or restarted and forgot the call: go on what
+        // the room says.
+        console.log(`[quple] heartbeat failed: ${e?.message ?? e}`);
+      } finally {
+        busy = false;
+      }
+      if (ended.current) return;
+      const v = decide({ ...s, now: Date.now(), remotes: s.remotes.size, me: meeting.displayName });
+      if (v.action === 'end') {
+        console.log(`[quple] watchdog: ending: ${v.reason}`);
+        jitsi.current?.close();
+        end(v.reason);
+      } else if (v.action === 'rejoin') {
+        console.log(`[quple] watchdog: rejoining (${v.why})`);
+        s.rejoins += 1;
+        s.joined = false;
+        s.remotes.clear();
+        s.aloneSince = null;
+        s.attemptStartedAt = Date.now();
+        current.current += 1;
+        // A new key mounts a fresh SDK, which joins the same room; the old
+        // one unmounts and leaves.
+        setAttempt(current.current);
+      }
+    }, POLL_MS);
+    return () => clearInterval(timer);
+  }, [api, meeting.meetingId, meeting.displayName, end]);
+
+  // Only the current attempt's events count.
+  const live = (fn: (e?: any) => void) => (e?: any) => {
+    if (attempt === current.current) fn(e);
+  };
+
   return (
     <View style={{ flex: 1, backgroundColor: 'black' }}>
       <StatusBar barStyle="light-content" />
       <JitsiMeeting
+        key={attempt}
         ref={jitsi}
         serverURL={meeting.jitsiUrl}
         room={meeting.meetingId}
@@ -399,22 +493,36 @@ function CallScreen({ meeting, onEnd }: { meeting: Meeting; onEnd: () => void })
           'call-integration.enabled': false,
           'pip.enabled': true,
         }}
+        // (No onConferenceLeft: this SDK never calls it.)
         eventListeners={{
           onConferenceWillJoin: trace('conference will join'),
-          onConferenceJoined: (e: unknown) => {
+          onConferenceJoined: live(e => {
             trace('conference joined')(e);
-            if (meeting.outgoing) connected(meeting.callUUID);
-          },
-          onReadyToClose: (e: unknown) => {
+            const s = w.current;
+            s.joined = true;
+            if (s.remotes.size === 0) s.aloneSince = Date.now();
+            if (meeting.outgoing && !s.reportedConnected) {
+              s.reportedConnected = true;
+              connected(meeting.callUUID);
+            }
+          }),
+          // The hang-up button.
+          onReadyToClose: live(e => {
             trace('ready to close')(e);
             end();
-          },
-          onConferenceLeft: (e: unknown) => {
-            trace('conference left')(e);
-            end();
-          },
-          onParticipantJoined: trace('participant joined'),
-          onParticipantLeft: trace('participant left'),
+          }),
+          onParticipantJoined: live(e => {
+            trace('participant joined')(e);
+            if (e?.isLocal || !e?.participantId) return;
+            w.current.remotes.add(e.participantId);
+            w.current.aloneSince = null;
+          }),
+          onParticipantLeft: live(e => {
+            trace('participant left')(e);
+            const s = w.current;
+            s.remotes.delete(e?.id);
+            if (s.remotes.size === 0 && s.joined) s.aloneSince = Date.now();
+          }),
         }}
         style={{ flex: 1 }}
       />

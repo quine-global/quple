@@ -7,6 +7,14 @@ export type Me = { username: string; defaultJitsiUrl: string };
 export type Contact = { username: string; online: boolean };
 export type Invite = { from: string; meetingId: string; jitsiUrl: string; createdAt: string };
 export type Call = { meetingId: string; jitsiUrl: string };
+/** A call as one side sees it (the server's /calls/{id}/heartbeat). */
+export type CallStatus = {
+  peer: string;
+  /** Since the other side's last heartbeat; null if it never sent one (not answered). */
+  peerSeenMsAgo: number | null;
+  /** Who hung up or declined; "" while the call is on. */
+  endedBy: string;
+};
 
 export class Api {
   constructor(private serverUrl: string) {}
@@ -35,6 +43,12 @@ export class Api {
   }
   call(to: string, jitsiUrl?: string) {
     return this.request<Call>('/call', { method: 'POST', body: JSON.stringify({ to, jitsiUrl }) });
+  }
+  heartbeat(meetingId: string) {
+    return this.request<CallStatus>(`/calls/${encodeURIComponent(meetingId)}/heartbeat`, { method: 'POST' });
+  }
+  hangUp(meetingId: string) {
+    return this.request<{ ok: boolean }>(`/calls/${encodeURIComponent(meetingId)}/hangup`, { method: 'POST' });
   }
   contacts() {
     return this.request<{ contacts: Contact[] }>('/contacts').then(r => r.contacts ?? []);

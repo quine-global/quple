@@ -149,3 +149,58 @@ func TestContacts(t *testing.T) {
 		t.Fatalf("bob sees %d of alice's contacts", n)
 	}
 }
+
+func TestCallHeartbeatAndHangUp(t *testing.T) {
+	srv := newTestApp(t)
+	_, call := do(t, srv, "alice", "POST", "/call", `{"to":"bob"}`)
+	id := call["meetingId"].(string)
+	path := "/calls/" + id
+
+	// The callee hasn't answered: the caller sees them as never seen.
+	status, st := do(t, srv, "alice", "POST", path+"/heartbeat", "")
+	if status != 200 || st["peer"] != "bob" || st["peerSeenMsAgo"] != nil || st["endedBy"] != "" {
+		t.Fatalf("caller before answer: %d %v", status, st)
+	}
+	// Bob answers: his call screen's heartbeat sees alice, and she him.
+	if status, st = do(t, srv, "bob", "POST", path+"/heartbeat", ""); status != 200 || st["peer"] != "alice" || st["peerSeenMsAgo"] == nil {
+		t.Fatalf("callee: %d %v", status, st)
+	}
+	if _, st = do(t, srv, "alice", "POST", path+"/heartbeat", ""); st["peerSeenMsAgo"] == nil {
+		t.Fatalf("caller after answer: %v", st)
+	}
+
+	// Strangers can't see or end it; unknown calls are 404.
+	if status, _ = do(t, srv, "eve", "POST", path+"/heartbeat", ""); status != 403 {
+		t.Errorf("stranger heartbeat: %d", status)
+	}
+	if status, _ = do(t, srv, "eve", "POST", path+"/hangup", ""); status != 403 {
+		t.Errorf("stranger hangup: %d", status)
+	}
+	if status, _ = do(t, srv, "alice", "POST", "/calls/quple-nope/heartbeat", ""); status != 404 {
+		t.Errorf("unknown call: %d", status)
+	}
+	if status, _ = do(t, srv, "alice", "GET", path+"/heartbeat", ""); status != 405 {
+		t.Errorf("GET heartbeat: %d", status)
+	}
+
+	// Bob hangs up; alice's next heartbeat says so, and a second hangup
+	// doesn't change who ended it.
+	if status, _ = do(t, srv, "bob", "POST", path+"/hangup", ""); status != 200 {
+		t.Fatalf("hangup: %d", status)
+	}
+	do(t, srv, "alice", "POST", path+"/hangup", "")
+	if _, st = do(t, srv, "alice", "POST", path+"/heartbeat", ""); st["endedBy"] != "bob" {
+		t.Fatalf("after hangup: %v", st)
+	}
+}
+
+func TestHeartbeatCountsAsPresence(t *testing.T) {
+	srv := newTestApp(t)
+	_, call := do(t, srv, "alice", "POST", "/call", `{"to":"bob"}`)
+	do(t, srv, "bob", "POST", "/calls/"+call["meetingId"].(string)+"/heartbeat", "")
+	do(t, srv, "alice", "POST", "/contacts", `{"username":"bob"}`)
+	_, list := do(t, srv, "alice", "GET", "/contacts", "")
+	if c := list["contacts"].([]any)[0].(map[string]any); c["online"] != true {
+		t.Fatalf("bob in a call shows offline: %v", c)
+	}
+}

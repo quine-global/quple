@@ -55,6 +55,8 @@ func (a *App) Routes(mux *http.ServeMux) {
 	mux.HandleFunc("/register", withCORS(a.requireAuth(a.handleRegister)))
 	mux.HandleFunc("/poll", withCORS(a.requireAuth(a.handlePoll)))
 	mux.HandleFunc("/call", withCORS(a.requireAuth(a.handleCall)))
+	mux.HandleFunc("/calls/{id}/heartbeat", withCORS(a.requireAuth(a.handleHeartbeat)))
+	mux.HandleFunc("/calls/{id}/hangup", withCORS(a.requireAuth(a.handleHangUp)))
 	mux.HandleFunc("/contacts", withCORS(a.requireAuth(a.handleContacts)))
 	mux.HandleFunc("/contacts/{username}", withCORS(a.requireAuth(a.handleContact)))
 }
@@ -154,6 +156,49 @@ func (a *App) handleCall(w http.ResponseWriter, r *http.Request, me string) {
 	a.store.Touch(me)
 	inv := a.store.PlaceCall(to, Invite{From: me, MeetingID: newMeetingID(), JitsiURL: jitsiURL})
 	writeJSON(w, http.StatusOK, map[string]string{"meetingId": inv.MeetingID, "jitsiUrl": jitsiURL})
+}
+
+// writeCallError answers for a call the caller can't touch.
+func writeCallError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, errNoCall):
+		writeError(w, http.StatusNotFound, err.Error())
+	case errors.Is(err, errNotParty):
+		writeError(w, http.StatusForbidden, err.Error())
+	default:
+		writeError(w, http.StatusInternalServerError, err.Error())
+	}
+}
+
+// handleHeartbeat is sent every few seconds from a call screen: "I'm still
+// in this call". It answers with the other side's last heartbeat and
+// whether anyone hung up, so an app can end a call whose other side is
+// gone. POST /calls/{id}/heartbeat
+func (a *App) handleHeartbeat(w http.ResponseWriter, r *http.Request, me string) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "POST only")
+		return
+	}
+	st, err := a.store.CallHeartbeat(r.PathValue("id"), me)
+	if err != nil {
+		writeCallError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, st)
+}
+
+// handleHangUp ends a call for both sides (hanging up, or declining an
+// incoming call). POST /calls/{id}/hangup
+func (a *App) handleHangUp(w http.ResponseWriter, r *http.Request, me string) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "POST only")
+		return
+	}
+	if err := a.store.HangUp(r.PathValue("id"), me); err != nil {
+		writeCallError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
 type contact struct {
