@@ -1,18 +1,16 @@
 name: flatpak
 
-# Builds Quple for Linux as a Flatpak (desktop/flatpak/) and publishes it
-# to Quine Linux's Flatpak repo (.forgejo/flatpak-publish.sh), for both
+# Builds Quple for Linux as a Flatpak (desktop/flatpak/) and uploads it to
+# the bucket's flatpak/incoming/ (.forgejo/flatpak-publish.sh), for both
 # architectures: on every push to main that touches the desktop app, or by
-# hand. Quine Linux preinstalls Quple from there.
+# hand. quine-global/flatpak-repo publishes it from there to Quine Linux's
+# Flatpak repo (flatpak.quineglobal.com) within about 10 minutes; Quine
+# Linux preinstalls Quple from that repo.
 #
-# Secrets/variables (quine-global, org-wide): FLATPAK_GPG_KEY_B64 (the
-# repo's armored secret signing key, fingerprint
-# D8A7EB83CA7D77EFF171D12A98815AFF3222E41B, base64-encoded onto one line:
-# Forgejo masks a secret in logs line by line, and the armored key's lines
-# leaked when it was stored as is),
-# MINIO_SECRET_KEY, MINIO_ACCESS_KEY (variable or secret). Optional
-# variables: MINIO_ENDPOINT (default https://s3.quineglobal.com),
-# MINIO_BUCKET (default quine-linux).
+# Secrets/variables (quine-global, org-wide): MINIO_SECRET_KEY,
+# MINIO_ACCESS_KEY (variable or secret). Optional variables:
+# MINIO_ENDPOINT (default https://s3.quineglobal.com), MINIO_BUCKET
+# (default quine-linux).
 
 on:
   push:
@@ -23,13 +21,9 @@ on:
       - ".forgejo/flatpak-*.sh"
   workflow_dispatch:
 
-# One publish at a time: each run downloads the repo, adds to it and
-# uploads it. This group covers this repo's runs; KeyMaker's publish
-# shares the repo too, so the scripts also take a lock in the bucket
-# (flatpak-build-in-container.sh).
 concurrency:
-  group: quine-flatpak-repo
-  cancel-in-progress: false
+  group: quple-flatpak-${{ github.ref }}
+  cancel-in-progress: true
 
 env:
   MINIO_ENDPOINT: ${{ vars.MINIO_ENDPOINT || 'https://s3.quineglobal.com' }}
@@ -41,21 +35,16 @@ jobs:
     runs-on: runner-x86-linux
     steps:
       - uses: https://forge.in.quineglobal.com/quine-global/mirror-actions-checkout@v4
-      - name: Build and publish
+      - name: Build and upload
         env:
-          FLATPAK_GPG_KEY_B64: ${{ secrets.FLATPAK_GPG_KEY_B64 }}
           MINIO_SECRET_KEY: ${{ secrets.MINIO_SECRET_KEY }}
         run: bash .forgejo/flatpak-publish.sh
 
-  # After x86_64, so the two never write the repo at once.
   aarch64:
-    needs: x86_64
-    if: ${{ !cancelled() }}
     runs-on: runner-arm64-linux
     steps:
       - uses: https://forge.in.quineglobal.com/quine-global/mirror-actions-checkout@v4
-      - name: Build and publish
+      - name: Build and upload
         env:
-          FLATPAK_GPG_KEY_B64: ${{ secrets.FLATPAK_GPG_KEY_B64 }}
           MINIO_SECRET_KEY: ${{ secrets.MINIO_SECRET_KEY }}
         run: bash .forgejo/flatpak-publish.sh

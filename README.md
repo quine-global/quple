@@ -278,13 +278,13 @@ window and installs the update itself (`desktop/src-tauri/src/updater.rs`).
 
 #### Linux (Quine Linux)
 
-A Flatpak, `com.quineglobal.Quple` (`desktop/flatpak/`), built and published
-to Quine Linux's Flatpak repo (`flatpak.quineglobal.com`) by
-`.forgejo/workflows/flatpak.yml` on every push to `main` that touches the
-desktop app. Quine Linux preinstalls it from there and updates it like its
-other Flatpaks. KeyMaker publishes to the same repo, so both publish
-scripts take a lock in the bucket (`.forgejo/repo-lock.sh`, the same in
-quine-global/keymaker).
+A Flatpak, `com.quineglobal.Quple` (`desktop/flatpak/`), built for both
+architectures by `.forgejo/workflows/flatpak.yml` on every push to `main`
+that touches the desktop app, and uploaded as a bundle to the bucket's
+`flatpak/incoming/`. quine-global/flatpak-repo publishes it from there to
+Quine Linux's Flatpak repo (`flatpak.quineglobal.com`) within about 10
+minutes. Quine Linux preinstalls it from that repo and updates it like its
+other Flatpaks.
 
 **Calls open in the browser**, not in a window of the app: Tauri draws with
 WebKitGTK on Linux, and the GNOME runtime's WebKitGTK (the Flatpak's) is
