@@ -1,0 +1,52 @@
+# Quple for Linux, as a Flatpak: built from this checkout and published to
+# Quine Linux's Flatpak repo (.forgejo/workflows/flatpak.yml), which Quine
+# Linux preinstalls it from and updates it through.
+#
+# The app's Tauri identifier is com.quple.desktop (macOS); here it's
+# com.quineglobal.Quple, the Flatpak's ID, so the window's Wayland app id
+# matches the desktop file (TAURI_CONFIG, below).
+app-id: com.quineglobal.Quple
+runtime: org.gnome.Platform
+# GNOME's runtime has WebKitGTK (webkit2gtk-4.1), which Tauri draws with.
+runtime-version: '50'
+sdk: org.gnome.Sdk
+sdk-extensions:
+  - org.freedesktop.Sdk.Extension.rust-stable
+command: quple
+finish-args:
+  - --share=ipc
+  - --share=network
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --socket=pulseaudio
+  - --device=all
+modules:
+  - name: quple
+    buildsystem: simple
+    build-options:
+      append-path: /usr/lib/sdk/rust-stable/bin
+      # Cargo fetches the crates (Cargo.lock pins them). Not Flathub, so the
+      # build may use the network.
+      build-args:
+        - --share=network
+      env:
+        CARGO_HOME: /run/build/quple/cargo
+        TAURI_CONFIG: '{"identifier":"com.quineglobal.Quple"}'
+        # The runners can be squeezed to 2 GB (zeus's memory balloon) while
+        # an image build runs beside this: 8 rustc at once got killed.
+        CARGO_BUILD_JOBS: '4'
+    build-commands:
+      - cd desktop/src-tauri && cargo build --release --locked --features custom-protocol
+      - install -Dm755 desktop/src-tauri/target/release/quple /app/bin/quple
+      - install -Dm644 desktop/flatpak/com.quineglobal.Quple.desktop /app/share/applications/com.quineglobal.Quple.desktop
+      - install -Dm644 desktop/flatpak/com.quineglobal.Quple.metainfo.xml /app/share/metainfo/com.quineglobal.Quple.metainfo.xml
+      - install -Dm644 desktop/src-tauri/icons/32x32.png /app/share/icons/hicolor/32x32/apps/com.quineglobal.Quple.png
+      - install -Dm644 desktop/src-tauri/icons/128x128.png /app/share/icons/hicolor/128x128/apps/com.quineglobal.Quple.png
+      - install -Dm644 desktop/src-tauri/icons/128x128@2x.png /app/share/icons/hicolor/256x256/apps/com.quineglobal.Quple.png
+    sources:
+      - type: dir
+        path: ../..
+        skip:
+          - desktop/src-tauri/target
+          - mobile
+          - server

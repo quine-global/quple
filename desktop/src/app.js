@@ -122,6 +122,15 @@ function deviceId() {
   return id || "desktop";
 }
 const DEVICE = deviceId();
+/**
+ * On Linux, calls open in the browser (lib.rs's MEETING_IN_BROWSER: the
+ * Flatpak's WebKitGTK has no WebRTC). Quple can't see or close the call
+ * there, so you hang up in Quple, and its watchdog goes on the server.
+ */
+const IN_BROWSER = /Linux/.test(navigator.userAgent) && !/Android/.test(navigator.userAgent);
+/** Said when a call ends while it's still open in the browser. */
+const CLOSE_IN_BROWSER = "Close the call in your browser too.";
+
 /** What your other devices call this one: "In a call with bob on your Mac". */
 const DEVICE_NAME = /Mac/.test(navigator.userAgent) ? "Mac" : "computer";
 
@@ -132,7 +141,9 @@ function newWatch() {
     startedAt: now,
     attemptStartedAt: now,
     rejoins: 0,
-    joined: false,
+    // In the browser, in the call once it's opened there: nothing says more.
+    external: IN_BROWSER,
+    joined: IN_BROWSER,
     remotes: 0,
     aloneSince: null,
     peerSince: null,
@@ -435,7 +446,9 @@ function Dashboard({ me, api, jitsiBase, jitsiSignedIn, onJitsiBase, onSettings 
     watch.current = null;
     if (hangUp) hangUpCall(c.meetingId);
     if (closeWindow) invoke("close_meeting", { room: c.meetingId }).catch(() => {});
-    setNotice(why);
+    // Hanging up in Quple doesn't reach the browser's tab: say so, unless
+    // the call never got there.
+    setNotice(IN_BROWSER && closeWindow ? [why, CLOSE_IN_BROWSER].filter(Boolean).join(". ") : why);
   };
   const endCallRef = useRef(endCall);
   endCallRef.current = endCall;
@@ -681,6 +694,7 @@ function Dashboard({ me, api, jitsiBase, jitsiSignedIn, onJitsiBase, onSettings 
         </datalist>
         ${isPublicJitsi(server || me.defaultJitsiUrl) &&
         !jitsiSignedIn &&
+        !IN_BROWSER &&
         html`<p class="muted">
           meet.jit.si only starts a meeting once someone signed in joins it.${" "}
           <button type="button" class="link-btn" onClick=${() =>
@@ -705,9 +719,11 @@ function Dashboard({ me, api, jitsiBase, jitsiSignedIn, onJitsiBase, onSettings 
       active.phase === "in-call" &&
       html`<div class="card in-call">
         <span>In a call with <strong>${active.peer}</strong></span>
+        ${IN_BROWSER &&
+        html`<p class="muted">The call is open in your browser. Hang up here when you're done.</p>`}
         <div class="button-row">
           <button type="button" class="secondary" onClick=${() => openMeeting(me, active.jitsiUrl, active.meetingId, active.peer)}>
-            Show
+            ${IN_BROWSER ? "Open again" : "Show"}
           </button>
           <button type="button" onClick=${() => endCall()}>Hang up</button>
         </div>
@@ -811,6 +827,7 @@ function Settings({ config, me, canSignOutOfJitsi, onSave, onCancel, onSignOut }
       <div class="card">
         <div class="button-row">
           ${canSignOutOfJitsi &&
+          !IN_BROWSER &&
           html`<button type="button" class="secondary" onClick=${() => invoke("jitsi_sign_out")}>
             Sign out of meet.jit.si
           </button>`}

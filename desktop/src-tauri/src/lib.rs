@@ -313,6 +313,12 @@ const MEETING_STATE_SCRIPT: &str = r#"
 "#;
 const MEETING_STATE_PREFIX: &str = "quple-state:";
 
+/// On Linux, calls open in the browser instead of a meeting window: the
+/// webview there is WebKitGTK, and the GNOME runtime's (the Flatpak's) is
+/// built without WebRTC, so Jitsi Meet can't run in it. The app then can't
+/// see the room; app.js's watchdog goes on Quple's server alone.
+const MEETING_IN_BROWSER: bool = cfg!(target_os = "linux");
+
 /// A meeting window's state, for the main window's watchdog (app.js).
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -406,7 +412,11 @@ fn open_meeting(
     let display_name = display_name.trim();
     let audio_muted = audio_muted.unwrap_or(false);
     let video_muted = video_muted.unwrap_or(false);
-    let url = if uses_public_jitsi(&jitsi_base) && is_signed_in(&app) {
+    // In the browser (Linux), meet.jit.si's sign-in page always comes first:
+    // it goes straight on to the room when the browser is signed in, and
+    // asks otherwise. Quple's own meet.jit.si sign-in is for its windows.
+    let via_signin = is_signed_in(&app) || MEETING_IN_BROWSER;
+    let url = if uses_public_jitsi(&jitsi_base) && via_signin {
         signin_url(&serde_json::json!({
             "room": room,
             "userInfo.displayName": display_name,
@@ -426,6 +436,14 @@ fn open_meeting(
         );
         Url::parse(&url).map_err(|_| format!("invalid meeting URL for {base}/{room}"))?
     };
+
+    if MEETING_IN_BROWSER {
+        use tauri_plugin_opener::OpenerExt;
+        return app
+            .opener()
+            .open_url(url.as_str(), None::<&str>)
+            .map_err(|e| format!("could not open the call in the browser: {e}"));
+    }
 
     let title = match peer.as_deref().map(str::trim) {
         Some(p) if !p.is_empty() => format!("Quple — {p}"),

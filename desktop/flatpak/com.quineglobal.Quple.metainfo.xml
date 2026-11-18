@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>com.quineglobal.Quple</id>
+  <name>Quple</name>
+  <summary>Call other Quine users by their username</summary>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>LicenseRef-proprietary</project_license>
+  <description>
+    <p>Sign in with your Quine account and call anyone by their Quine username.
+    Calls run on Jitsi Meet.</p>
+  </description>
+  <launchable type="desktop-id">com.quineglobal.Quple.desktop</launchable>
+  <url type="homepage">https://git.quineglobal.com/quine-global/quple.git</url>
+  <content_rating type="oars-1.1"/>
+</component>

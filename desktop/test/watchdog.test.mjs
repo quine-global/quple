@@ -20,6 +20,18 @@ const base = (o = {}) => ({
   ...o,
 });
 
+test('in the browser (Linux): the room is never looked at', () => {
+  // Not joined, nobody in the room, for ages: it'd rejoin or end with a
+  // meeting window, but in the browser only the server counts.
+  const s = base({ external: true, joined: false, remotes: 0, aloneSince: T - 10 * ALONE_END_MS, attemptStartedAt: T - 10 * JOIN_TIMEOUT_MS });
+  expect(decide(s)).toEqual({ action: 'none' });
+});
+
+test('in the browser: the other side hanging up or vanishing still ends it', () => {
+  expect(decide(base({ external: true, status: { peer: 'bob', peerSeenMsAgo: 1000, endedBy: 'bob' } }))).toEqual({ action: 'end', reason: 'bob hung up' });
+  expect(decide(base({ external: true, status: { peer: 'bob', peerSeenMsAgo: PEER_LOST_MS + 1, endedBy: '' } }))).toEqual({ action: 'end', reason: 'Lost the connection to bob' });
+});
+
 test('a call going fine is left alone', () => {
   expect(decide(base())).toEqual({ action: 'none' });
 });

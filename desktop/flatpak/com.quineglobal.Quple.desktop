@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Quple
+Comment=Call other Quine users by their username
+Exec=quple
+Icon=com.quineglobal.Quple
+Terminal=false
+Categories=Network;Chat;VideoConference;
+Keywords=call;video;jitsi;quine;
+StartupNotify=true

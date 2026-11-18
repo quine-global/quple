@@ -57,6 +57,15 @@ export function decide(s) {
     return { action: 'end', reason: st.peerSeenMsAgo === null ? `${st.peer} didn't answer` : `${st.peer} hung up` };
   }
 
+  // Desktop only: the call is in the browser (Linux, lib.rs), where the
+  // room can't be seen. Quple's server alone says when it's over.
+  if (s.external) {
+    if (fresh && st && st.peerSeenMsAgo !== null && st.peerSeenMsAgo > PEER_LOST_MS) {
+      return { action: 'end', reason: `Lost the connection to ${st.peer}` };
+    }
+    return { action: 'none' };
+  }
+
   // Nobody's here. Is the other side coming?
   if (s.remotes === 0 && fresh && st) {
     if (st.peerSeenMsAgo === null && s.now - s.startedAt > NO_ANSWER_MS) {
