@@ -685,8 +685,8 @@ function CallScreen(props: { meeting: Meeting; serverUrl: string; onEnd: (notice
   // Hung up from iOS's call screen or the lock screen: leave the meeting.
   useEffect(() => {
     onHangUp(meeting.callUUID, () => {
-      jitsi.current?.close();
       end();
+      jitsi.current?.close();
     });
   }, [meeting.callUUID, end]);
 
@@ -722,16 +722,21 @@ function CallScreen(props: { meeting: Meeting; serverUrl: string; onEnd: (notice
         }
         if (s.status?.movedJoined) {
           console.log(`[quple] moved to ${movedTo}`);
-          jitsi.current?.close();
+          // end() before close(): closing makes the SDK fire
+          // onReadyToClose, whose end() would hang up the call that's
+          // going on on the other device (it did: the other side's app
+          // saw "hung up" and ended too). Ended first, that end() does
+          // nothing.
           end(`Moved to your ${movedTo}`, false);
+          jitsi.current?.close();
         }
         return;
       }
       const v = decide({ ...s, now: Date.now(), remotes: s.remotes.size, me: meeting.displayName });
       if (v.action === 'end') {
         console.log(`[quple] watchdog: ending: ${v.reason}`);
+        end(v.reason); // before close(), as above: keeps v.reason
         jitsi.current?.close();
-        end(v.reason);
       } else if (v.action === 'rejoin') {
         console.log(`[quple] watchdog: rejoining (${v.why})`);
         s.rejoins += 1;
