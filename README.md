@@ -57,7 +57,15 @@ other and agree on a meeting room.
    no access to the app, so a script injected into it reports the room
    (joined, how many others, from Jitsi's `window.APP`) through the page
    title, which the app reads (`desktop/src-tauri/src/lib.rs`). Closing
-   that window, or Jitsi's hang-up button, hangs up.
+   that window, or Jitsi's hang-up button, hangs up, and the window closes.
+   Jitsi's red button is always a plain hang-up, on both apps: no "Leave /
+   End meeting for all" menu, since hanging up already ends the call on
+   both sides (desktop: the injected script; iPhone:
+   `mobile/patches/@jitsi+react-native-sdk+*.patch`, applied by
+   patch-package on `npm install`). Each call starts with the mic and
+   camera on or off as they were at the end of the last one, on that
+   device (Quple's own muting for a move, and iOS turning the camera off
+   in the background, don't count).
 7. **Calls while Quple is closed.** Without VoIP push (a paid Apple
    account), the iPhone app only rings while it's open. So when a call is
    placed to someone whose app hasn't polled in the last 10 s, the server

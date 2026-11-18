@@ -80,8 +80,28 @@ function jitsiHost(url) {
  */
 const isPublicJitsi = (url) => jitsiHost(url) === "meet.jit.si";
 
+/**
+ * Whether the mic and camera were off at the end of the last call: the next
+ * call's window starts the same way.
+ */
+const MEDIA_KEY = "quple.media";
+function lastMedia() {
+  try {
+    const m = JSON.parse(localStorage.getItem(MEDIA_KEY) || "{}");
+    return { audioMuted: !!m.audioMuted, videoMuted: !!m.videoMuted };
+  } catch {
+    return { audioMuted: false, videoMuted: false };
+  }
+}
+function rememberMedia(audioMuted, videoMuted) {
+  try {
+    localStorage.setItem(MEDIA_KEY, JSON.stringify({ audioMuted, videoMuted }));
+  } catch {}
+}
+
 function openMeeting(me, jitsiUrl, meetingId, peer) {
-  return invoke("open_meeting", { jitsiBase: jitsiUrl, room: meetingId, displayName: me.username, peer });
+  const { audioMuted, videoMuted } = lastMedia();
+  return invoke("open_meeting", { jitsiBase: jitsiUrl, room: meetingId, displayName: me.username, peer, audioMuted, videoMuted });
 }
 
 const callPath = (meetingId) => `/calls/${encodeURIComponent(meetingId)}`;
@@ -492,7 +512,10 @@ function Dashboard({ me, api, jitsiBase, jitsiSignedIn, onJitsiBase, onSettings 
       const c = activeRef.current;
       const w = watch.current;
       if (!c || !w || e.payload.room !== c.meetingId) return;
-      const { joined, remotes } = e.payload;
+      const { joined, remotes, audioMuted, videoMuted } = e.payload;
+      // Remember the mic and camera for the next call, but not Quple's own
+      // muting when the call moves to your other device.
+      if (joined && !w.mutedForMove) rememberMedia(audioMuted, videoMuted);
       w.joined = joined;
       w.remotes = remotes;
       if (!joined || remotes > 0) w.aloneSince = null;

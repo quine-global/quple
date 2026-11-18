@@ -31,6 +31,7 @@ import { ActiveCall, Api, CallStatus, Contact, Invite, Me } from './src/api';
 import { SignedOut, restore, signIn, signOut } from './src/auth';
 import { connected, finish, onHangUp, ring, setupCallKit, startOutgoing, stopRinging } from './src/callkit';
 import { POLL_MS } from './src/config';
+import { lastMedia, rememberMedia } from './src/media';
 import { Settings, cleanUrl, loadSettings, saveSettings } from './src/settings';
 import { NOTIFIED_NO_ANSWER_MS, NO_ANSWER_MS, decide } from './src/watchdog';
 import { NTFY_APP_STORE_URL, dismissForThisLaunch, dismissedThisLaunch, isSetUp, markSetUp } from './src/notifications';
@@ -678,6 +679,20 @@ function CallScreen(props: { meeting: Meeting; serverUrl: string; onEnd: (notice
   );
   // Moved to another device: muted once, then gone when it's joined.
   const mutedForMove = useRef(false);
+  // The mic and camera start as they were at the end of the last call.
+  const startMedia = useRef(lastMedia()).current;
+  const jitsiConfig = useRef({
+    startWithAudioMuted: startMedia.audioMuted,
+    startWithVideoMuted: startMedia.videoMuted,
+  }).current;
+  // Only what you switch yourself counts: not Quple muting you for a move,
+  // nor Jitsi turning the camera off while the app is in the background
+  // (hanging up from the lock screen would otherwise start the next call
+  // with the camera off).
+  const remember = (change: { audioMuted?: boolean; videoMuted?: boolean }) => {
+    if (mutedForMove.current || AppState.currentState !== 'active' || !w.current.joined) return;
+    rememberMedia(change);
+  };
   useEffect(() => {
     console.log(`[quple] call screen: ${meeting.outgoing ? 'outgoing' : 'incoming'} ${meeting.jitsiUrl} ${meeting.meetingId}`);
   }, [meeting]);
@@ -770,7 +785,7 @@ function CallScreen(props: { meeting: Meeting; serverUrl: string; onEnd: (notice
         ref={jitsi}
         serverURL={meeting.jitsiUrl}
         room={meeting.meetingId}
-        config={{}}
+        config={jitsiConfig}
         userInfo={{ displayName: meeting.displayName } as any}
         flags={{
           'welcomepage.enabled': false,
@@ -798,6 +813,8 @@ function CallScreen(props: { meeting: Meeting; serverUrl: string; onEnd: (notice
             trace('ready to close')(e);
             end();
           }),
+          onAudioMutedChanged: live(muted => remember({ audioMuted: !!muted })),
+          onVideoMutedChanged: live(muted => remember({ videoMuted: !!muted })),
           onParticipantJoined: live(e => {
             trace('participant joined')(e);
             if (e?.isLocal || !e?.participantId) return;

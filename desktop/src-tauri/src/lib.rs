@@ -258,35 +258,70 @@ fn jitsi_sign_out(app: tauri::AppHandle) -> Result<(), String> {
 /// channel out of the meeting window that needs no IPC access (the window
 /// has none: see open_meeting). Jitsi Meet's web app keeps its state in
 /// `window.APP`: `store` (Redux; a conference there means joined) and
-/// `conference.membersCount` (everyone, us included). Read every 1.5 s;
-/// the title only changes, and so only reports, when the state does.
+/// `conference.membersCount` (everyone, us included), and the mic and
+/// camera in `features/base/media` (video's `muted` is a bitmask of who
+/// muted it). Read every half second; the title only changes, and so only
+/// reports, when the state does.
+///
+/// It also makes the red button a plain hang-up, and closes the window on
+/// it:
+/// - Jitsi shows a "Leave / End meeting for all" menu to a moderator when
+///   the server supports ending a meeting for everyone. Quple doesn't need
+///   it: hanging up ends the call on the other side's app too (through
+///   Quple's server). So the conference says it doesn't support that.
+/// - After hanging up, with no welcome or close page (our Jitsi has
+///   neither), Jitsi stays on the room and shows a sticky "Thank you for
+///   using …" notification. That notification only follows leaving (not a
+///   dropped connection), so on seeing it, go to /quple-hung-up: leaving the
+///   room's page is what closes the window (open_meeting's on_navigation).
 const MEETING_STATE_SCRIPT: &str = r#"
 (function () {
   if (window.top !== window) return;
+  var left = false;
   setInterval(function () {
     try {
       var app = window.APP;
       if (!app || !app.store || !app.conference) return;
-      var st = app.store.getState()['features/base/conference'];
-      var joined = !!(st && st.conference);
+      var state = app.store.getState();
+      var st = state['features/base/conference'];
+      var conf = st && st.conference;
+      if (conf && conf.isEndConferenceSupported) {
+        conf.isEndConferenceSupported = function () { return false; };
+      }
+      var notes = (state['features/notifications'] || {}).notifications || [];
+      if (!left && notes.some(function (n) { return n.props && n.props.titleKey === 'dialog.thankYou'; })) {
+        left = true;
+        location.assign(location.origin + '/quple-hung-up');
+        return;
+      }
+      var joined = !!conf;
       var remotes = 0;
       if (joined) {
         try { remotes = Math.max(0, app.conference.membersCount - 1); } catch (e) {}
       }
-      var title = 'quple-state:' + JSON.stringify({ joined: joined, remotes: remotes });
+      var media = state['features/base/media'] || {};
+      var title = 'quple-state:' + JSON.stringify({
+        joined: joined,
+        remotes: remotes,
+        audioMuted: !!(media.audio && media.audio.muted),
+        videoMuted: !!(media.video && media.video.muted)
+      });
       if (document.title !== title) document.title = title;
     } catch (e) {}
-  }, 1500);
+  }, 500);
 })();
 "#;
 const MEETING_STATE_PREFIX: &str = "quple-state:";
 
 /// A meeting window's state, for the main window's watchdog (app.js).
 #[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
 struct MeetingState {
     room: String,
     joined: bool,
     remotes: u32,
+    audio_muted: bool,
+    video_muted: bool,
 }
 
 /// A meeting window closed, or Jitsi left the room (its hang-up button).
@@ -342,6 +377,8 @@ fn open_meeting(
     room: String,
     display_name: String,
     peer: Option<String>,
+    audio_muted: Option<bool>,
+    video_muted: Option<bool>,
 ) -> Result<(), String> {
     let room = room.trim().to_string();
     if room.is_empty() {
@@ -364,20 +401,27 @@ fn open_meeting(
     // `key=<JSON value>` pairs. Set the display name to the Quple username and
     // skip the pre-join screen so the call starts straight away
     // (`prejoinPageEnabled` is the older name some deployments still use).
+    // The mic and camera start as they were at the end of the last call
+    // (app.js keeps that).
     let display_name = display_name.trim();
+    let audio_muted = audio_muted.unwrap_or(false);
+    let video_muted = video_muted.unwrap_or(false);
     let url = if uses_public_jitsi(&jitsi_base) && is_signed_in(&app) {
         signin_url(&serde_json::json!({
             "room": room,
             "userInfo.displayName": display_name,
             "config.prejoinConfig.enabled": false,
             "config.prejoinPageEnabled": false,
+            "config.startWithAudioMuted": audio_muted,
+            "config.startWithVideoMuted": video_muted,
         }))?
     } else {
         let name_json = serde_json::to_string(display_name).map_err(|e| e.to_string())?;
         let base = jitsi_base.trim_end_matches('/');
         let url = format!(
             "{base}/{room}#userInfo.displayName={}\
-             &config.prejoinConfig.enabled=false&config.prejoinPageEnabled=false",
+             &config.prejoinConfig.enabled=false&config.prejoinPageEnabled=false\
+             &config.startWithAudioMuted={audio_muted}&config.startWithVideoMuted={video_muted}",
             percent_encode(&name_json)
         );
         Url::parse(&url).map_err(|_| format!("invalid meeting URL for {base}/{room}"))?
@@ -414,6 +458,8 @@ fn open_meeting(
                 room: room_title.clone(),
                 joined: v["joined"].as_bool().unwrap_or(false),
                 remotes: v["remotes"].as_u64().unwrap_or(0) as u32,
+                audio_muted: v["audioMuted"].as_bool().unwrap_or(false),
+                video_muted: v["videoMuted"].as_bool().unwrap_or(false),
             };
             let _ = app_title.emit_to("main", "meeting-state", state);
         })
