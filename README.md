@@ -276,6 +276,39 @@ window and installs the update itself (`desktop/src-tauri/src/updater.rs`).
 - The app is only ad-hoc signed: the cask strips the quarantine flag, and
   says `auto_updates true`, so `brew upgrade` leaves it to Sparkle.
 
+#### Linux (Quine Linux)
+
+A Flatpak, `com.quineglobal.Quple` (`desktop/flatpak/`), built and published
+to Quine Linux's Flatpak repo (`flatpak.quineglobal.com`) by
+`.forgejo/workflows/flatpak.yml` on every push to `main` that touches the
+desktop app. Quine Linux preinstalls it from there and updates it like its
+other Flatpaks. KeyMaker publishes to the same repo, so both publish
+scripts take a lock in the bucket (`.forgejo/repo-lock.sh`, the same in
+quine-global/keymaker).
+
+**Calls open in the browser**, not in a window of the app: Tauri draws with
+WebKitGTK on Linux, and the GNOME runtime's WebKitGTK (the Flatpak's) is
+built without WebRTC, so Jitsi Meet can't run in it (tested on GNOME 50
+and 51: no `RTCPeerConnection`). Sign-in, contacts and ringing are in the
+app as on the Mac; when a call starts, the meeting opens in the default
+browser (`MEETING_IN_BROWSER` in `lib.rs`). The app can't see or close the
+browser's tab, so:
+- You hang up in Quple; when a call ends, it says to close the browser's
+  tab too.
+- The watchdog goes on Quple's server alone (`external` in
+  `desktop/src/watchdog.js`): the other side hanging up or vanishing ends
+  the call; the room-based rules (rejoining, alone in the room) don't
+  apply.
+- Hanging up only in the browser isn't seen: the other side ends the call
+  after its own alone-in-the-room timeout.
+- meet.jit.si's sign-in happens in the browser (its sign-in page comes first
+  and goes straight on when the browser is signed in), so the app's own
+  "Sign in to meet.jit.si" isn't shown.
+
+The app id (the Tauri identifier, set by `TAURI_CONFIG` in the manifest) is
+`com.quineglobal.Quple` here rather than the Mac's `com.quple.desktop`, so
+the window matches its desktop file.
+
 ### 4. iPhone app (`mobile/`)
 
 React Native 0.85 (the version the Jitsi Meet SDK, 13.3, supports), iOS
