@@ -5,22 +5,31 @@ import (
 	"time"
 )
 
-func TestPlaceCallAndDrainInvites(t *testing.T) {
+func TestPlaceCallRingsEachDeviceOnce(t *testing.T) {
 	s := NewStore()
 
-	inv := s.PlaceCall("bob", Invite{From: "alice", MeetingID: newMeetingID()})
+	inv := s.PlaceCall("bob", "alice-mac", "Mac", Invite{From: "alice", MeetingID: newMeetingID()})
 	if inv.CreatedAt.IsZero() {
 		t.Fatal("CreatedAt not set")
 	}
 
-	got := s.DrainInvites("bob")
-	if len(got) != 1 || got[0].MeetingID != inv.MeetingID {
-		t.Fatalf("DrainInvites = %+v, want one invite with meetingId %q", got, inv.MeetingID)
+	// Each of bob's devices gets it, once.
+	for _, device := range []string{"bob-phone", "bob-mac"} {
+		got := s.PendingInvites("bob", device)
+		if len(got) != 1 || got[0].MeetingID != inv.MeetingID {
+			t.Fatalf("%s: PendingInvites = %+v, want one invite with meetingId %q", device, got, inv.MeetingID)
+		}
+		if got := s.PendingInvites("bob", device); len(got) != 0 {
+			t.Fatalf("%s: again = %+v, want empty", device, got)
+		}
 	}
 
-	// Second drain should be empty: invites are delivered once.
-	if got := s.DrainInvites("bob"); len(got) != 0 {
-		t.Fatalf("DrainInvites after drain = %+v, want empty", got)
+	// Once one answers, a device that hasn't polled yet doesn't ring.
+	if _, err := s.CallHeartbeat(inv.MeetingID, "bob", Heartbeat{Device: "bob-phone", Name: "iPhone"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := s.PendingInvites("bob", "bob-ipad"); len(got) != 0 {
+		t.Fatalf("answered call still rings: %+v", got)
 	}
 }
 
@@ -35,7 +44,7 @@ func TestPresence(t *testing.T) {
 	if s.IsOnline("bob") {
 		t.Fatal("unknown user reported online")
 	}
-	s.DrainInvites("bob") // polling counts as presence
+	s.PendingInvites("bob", "") // polling counts as presence
 	if !s.IsOnline("bob") {
 		t.Fatal("polling user not reported online")
 	}
@@ -43,7 +52,7 @@ func TestPresence(t *testing.T) {
 
 func TestIdleCallsAreForgotten(t *testing.T) {
 	s := NewStore()
-	inv := s.PlaceCall("bob", Invite{From: "alice", MeetingID: newMeetingID()})
+	inv := s.PlaceCall("bob", "", "", Invite{From: "alice", MeetingID: newMeetingID()})
 	s.calls[inv.MeetingID].touched = time.Now().Add(-callIdleTTL - time.Second)
 	if _, err := s.CallHeartbeat(inv.MeetingID, "alice", Heartbeat{}); err != errNoCall {
 		t.Fatalf("heartbeat on an idle call: %v, want errNoCall", err)

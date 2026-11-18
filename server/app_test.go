@@ -316,3 +316,99 @@ func TestUnansweredCallIsNotOffered(t *testing.T) {
 		t.Fatalf("calls without a device: %v", poll)
 	}
 }
+
+func TestEveryDeviceRingsAndHearsWhereItWasAnswered(t *testing.T) {
+	srv := newTestApp(t)
+	_, call := do(t, srv, "alice", "POST", "/call", `{"to":"bob","device":"alice-mac","name":"Mac"}`)
+	id := call["meetingId"].(string)
+
+	// Both of bob's devices ring, each once.
+	for _, device := range []string{"bob-phone", "bob-mac"} {
+		_, poll := do(t, srv, "bob", "GET", "/poll?device="+device, "")
+		if invites := poll["invites"].([]any); len(invites) != 1 || invites[0].(map[string]any)["meetingId"] != id {
+			t.Fatalf("%s: %v", device, poll)
+		}
+		if _, poll = do(t, srv, "bob", "GET", "/poll?device="+device, ""); len(poll["invites"].([]any)) != 0 {
+			t.Fatalf("%s rings twice: %v", device, poll)
+		}
+	}
+
+	// Answered on the iPhone: the Mac, still ringing, hears it and stops
+	// (it's not a hang-up); the iPhone doesn't hear it about itself.
+	do(t, srv, "bob", "POST", "/calls/"+id+"/heartbeat", `{"device":"bob-phone","name":"iPhone"}`)
+	if _, st := do(t, srv, "bob", "GET", "/calls/"+id+"?device=bob-mac", ""); st["answeredOn"] != "iPhone" || st["endedBy"] != "" || st["peerEnded"] != false {
+		t.Fatalf("mac while ringing: %v", st)
+	}
+	if _, st := do(t, srv, "bob", "GET", "/calls/"+id+"?device=bob-phone", ""); st["answeredOn"] != nil {
+		t.Fatalf("phone told it was answered elsewhere: %v", st)
+	}
+	// Alice sees the answer.
+	if _, st := do(t, srv, "alice", "POST", "/calls/"+id+"/heartbeat", `{"device":"alice-mac","name":"Mac"}`); st["peerSeenMsAgo"] == nil {
+		t.Fatalf("caller doesn't see the answer: %v", st)
+	}
+}
+
+func TestCallYourself(t *testing.T) {
+	srv := newTestApp(t)
+	// Not without saying which device: that's how the sides are told apart.
+	if status, _ := do(t, srv, "alice", "POST", "/call", `{"to":"alice"}`); status != 400 {
+		t.Fatalf("self call without a device: %d", status)
+	}
+	status, call := do(t, srv, "alice", "POST", "/call", `{"to":"alice","device":"alice-mac","name":"Mac"}`)
+	if status != 200 {
+		t.Fatalf("self call: %d %v", status, call)
+	}
+	id := call["meetingId"].(string)
+	path := "/calls/" + id
+	mac := `{"device":"alice-mac","name":"Mac","joined":true}`
+	phone := `{"device":"alice-phone","name":"iPhone","joined":true}`
+
+	// The Mac that placed it doesn't ring; the iPhone does.
+	if _, poll := do(t, srv, "alice", "GET", "/poll?device=alice-mac", ""); len(poll["invites"].([]any)) != 0 {
+		t.Fatalf("calling device rings: %v", poll)
+	}
+	if _, poll := do(t, srv, "alice", "GET", "/poll?device=alice-phone", ""); len(poll["invites"].([]any)) != 1 {
+		t.Fatalf("other device doesn't ring: %v", poll)
+	}
+	// Nor is it offered to move (it's on both of your devices already).
+	if _, poll := do(t, srv, "alice", "GET", "/poll?device=alice-ipad", ""); len(poll["calls"].([]any)) != 0 {
+		t.Fatalf("self call offered to move: %v", poll)
+	}
+
+	// Ringing: the Mac sees nobody yet. The iPhone answers; each sees the other.
+	if _, st := do(t, srv, "alice", "POST", path+"/heartbeat", mac); st["peerSeenMsAgo"] != nil || st["peer"] != "alice" {
+		t.Fatalf("mac while ringing: %v", st)
+	}
+	if _, st := do(t, srv, "alice", "POST", path+"/heartbeat", phone); st["peerSeenMsAgo"] == nil || st["movedTo"] != nil {
+		t.Fatalf("phone after answering: %v", st)
+	}
+	if _, st := do(t, srv, "alice", "POST", path+"/heartbeat", mac); st["peerSeenMsAgo"] == nil || st["movedTo"] != nil {
+		t.Fatalf("mac after the answer: %v", st)
+	}
+	if status, _ := do(t, srv, "alice", "POST", path+"/move", `{"device":"alice-ipad","name":"iPad"}`); status != 409 {
+		t.Errorf("moving a self call: %d", status)
+	}
+
+	// The iPhone hangs up: the Mac sees the other side gone, the iPhone
+	// doesn't see itself as the other side.
+	do(t, srv, "alice", "POST", path+"/hangup", `{"device":"alice-phone"}`)
+	if _, st := do(t, srv, "alice", "POST", path+"/heartbeat", mac); st["peerEnded"] != true || st["endedBy"] != "alice" {
+		t.Fatalf("mac after the phone hung up: %v", st)
+	}
+	if _, st := do(t, srv, "alice", "POST", path+"/heartbeat", phone); st["peerEnded"] != false {
+		t.Fatalf("phone after hanging up: %v", st)
+	}
+}
+
+func TestHangUpTellsThePeer(t *testing.T) {
+	srv := newTestApp(t)
+	_, call := do(t, srv, "alice", "POST", "/call", `{"to":"bob"}`)
+	id := call["meetingId"].(string)
+	do(t, srv, "bob", "POST", "/calls/"+id+"/hangup", "")
+	if _, st := do(t, srv, "alice", "GET", "/calls/"+id, ""); st["peerEnded"] != true || st["endedBy"] != "bob" {
+		t.Fatalf("caller after bob declined: %v", st)
+	}
+	if _, st := do(t, srv, "bob", "GET", "/calls/"+id, ""); st["peerEnded"] != false {
+		t.Fatalf("bob after declining: %v", st)
+	}
+}

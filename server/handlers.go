@@ -129,25 +129,28 @@ func (a *App) handleRegister(w http.ResponseWriter, r *http.Request, me string) 
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
-// handlePoll returns (and clears) invites waiting for the caller, and counts
-// as presence. GET /poll[?device=...]
+// handlePoll returns the calls ringing for the caller that this device
+// hasn't rung for yet (every device of yours rings), and counts as
+// presence. GET /poll[?device=...]
 func (a *App) handlePoll(w http.ResponseWriter, r *http.Request, me string) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "GET only")
 		return
 	}
-	body := map[string]any{"invites": a.store.DrainInvites(me)}
+	device := r.URL.Query().Get("device")
+	body := map[string]any{"invites": a.store.PendingInvites(me, device)}
 	// With ?device=, also your calls on your other devices, to move here.
-	if device := r.URL.Query().Get("device"); device != "" {
+	if device != "" {
 		body["calls"] = a.store.ActiveCalls(me, device)
 	}
 	writeJSON(w, http.StatusOK, body)
 }
 
-// handleCall starts a call from the caller to another user, on whichever
+// handleCall starts a call from the caller to another user (all of whose
+// devices ring), or to themselves (their other devices ring), on whichever
 // Jitsi Meet server the caller picks (the default if none). Jitsi servers
 // don't need any credentials from us: both sides just open the same room.
-// POST {"to": "bob", "jitsiUrl": "https://meet.jit.si"}
+// POST {"to": "bob", "jitsiUrl": "https://meet.jit.si", "device": "...", "name": "Mac"}
 func (a *App) handleCall(w http.ResponseWriter, r *http.Request, me string) {
 	if r.Method != http.MethodPost {
 		writeError(w, http.StatusMethodNotAllowed, "POST only")
@@ -156,6 +159,9 @@ func (a *App) handleCall(w http.ResponseWriter, r *http.Request, me string) {
 	var body struct {
 		To       string `json:"to"`
 		JitsiURL string `json:"jitsiUrl"`
+		// The calling device (optional, but needed to call yourself).
+		Device string `json:"device"`
+		Name   string `json:"name"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON body")
@@ -166,8 +172,8 @@ func (a *App) handleCall(w http.ResponseWriter, r *http.Request, me string) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	if to == me {
-		writeError(w, http.StatusBadRequest, "you can't call yourself")
+	if to == me && body.Device == "" {
+		writeError(w, http.StatusBadRequest, errNeedDevice.Error())
 		return
 	}
 	jitsiURL := a.defaultJitsiURL
@@ -179,7 +185,7 @@ func (a *App) handleCall(w http.ResponseWriter, r *http.Request, me string) {
 	}
 
 	a.store.Touch(me)
-	inv := a.store.PlaceCall(to, Invite{From: me, MeetingID: newMeetingID(), JitsiURL: jitsiURL})
+	inv := a.store.PlaceCall(to, body.Device, body.Name, Invite{From: me, MeetingID: newMeetingID(), JitsiURL: jitsiURL})
 	// Their app is closed (it hasn't polled lately): a notification, so they
 	// can open it and answer. The caller's app then rings for longer.
 	notified := false
@@ -206,7 +212,9 @@ func writeCallError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusNotFound, err.Error())
 	case errors.Is(err, errNotParty):
 		writeError(w, http.StatusForbidden, err.Error())
-	case errors.Is(err, errCallEnded):
+	case errors.Is(err, errNeedDevice):
+		writeError(w, http.StatusBadRequest, err.Error())
+	case errors.Is(err, errCallEnded), errors.Is(err, errSelfMove):
 		writeError(w, http.StatusConflict, err.Error())
 	default:
 		writeError(w, http.StatusInternalServerError, err.Error())
@@ -238,14 +246,15 @@ func (a *App) handleHeartbeat(w http.ResponseWriter, r *http.Request, me string)
 	writeJSON(w, http.StatusOK, st)
 }
 
-// handleCallStatus is the call as the caller sees it, without counting as
-// a heartbeat (answering): for a phone that's still ringing. GET /calls/{id}
+// handleCallStatus is the call as the caller's device sees it, without
+// counting as a heartbeat (answering): for a device that's still ringing.
+// GET /calls/{id}[?device=...]
 func (a *App) handleCallStatus(w http.ResponseWriter, r *http.Request, me string) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "GET only")
 		return
 	}
-	st, err := a.store.CallStatus(r.PathValue("id"), me)
+	st, err := a.store.CallStatus(r.PathValue("id"), me, r.URL.Query().Get("device"))
 	if err != nil {
 		writeCallError(w, err)
 		return
@@ -278,13 +287,23 @@ func (a *App) handleMove(w http.ResponseWriter, r *http.Request, me string) {
 }
 
 // handleHangUp ends a call for both sides (hanging up, or declining an
-// incoming call). POST /calls/{id}/hangup
+// incoming call). POST /calls/{id}/hangup [{"device": "..."}]: the device
+// says which side hangs up in a call to yourself.
 func (a *App) handleHangUp(w http.ResponseWriter, r *http.Request, me string) {
 	if r.Method != http.MethodPost {
 		writeError(w, http.StatusMethodNotAllowed, "POST only")
 		return
 	}
-	missedBy, err := a.store.HangUp(r.PathValue("id"), me)
+	var body struct {
+		Device string `json:"device"`
+	}
+	if r.ContentLength != 0 {
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid JSON body")
+			return
+		}
+	}
+	missedBy, err := a.store.HangUp(r.PathValue("id"), me, body.Device)
 	if err != nil {
 		writeCallError(w, err)
 		return

@@ -38,13 +38,22 @@ export const ALONE_END_MS = 120_000;
 /** Times the SDK is started over before the call is given up. */
 export const MAX_REJOINS = 3;
 
+/**
+ * Whether the other side hung up: the server's peerEnded (in a call to
+ * yourself, endedBy is you either way), or, from a server without it,
+ * endedBy not being me.
+ */
+export function peerEnded(st, me) {
+  return st.peerEnded ?? (!!st.endedBy && st.endedBy !== me);
+}
+
 export function decide(s) {
   const st = s.status;
   // Fresh enough to act on: an answer from the last two polls or so.
   const fresh = st !== null && s.statusAt !== null && s.now - s.statusAt < 10_000;
 
   // Hung up or declined, from either app: always final.
-  if (st && st.endedBy && st.endedBy !== s.me) {
+  if (st && peerEnded(st, s.me)) {
     return { action: 'end', reason: st.peerSeenMsAgo === null ? `${st.peer} didn't answer` : `${st.peer} hung up` };
   }
 

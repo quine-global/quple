@@ -11,7 +11,7 @@
 // isn't in. A Quple server outage alone never ends a call that Jitsi is
 // still carrying.
 
-import { CallStatus } from './api';
+import type { CallStatus } from './api';
 
 /** The caller gives up when the callee hasn't answered (CallKit rings for 45 s). */
 export const NO_ANSWER_MS = 60_000;
@@ -34,6 +34,11 @@ export const ALONE_REJOIN_MS = 30_000;
 export const ALONE_END_MS = 120_000;
 /** Times the SDK is started over before the call is given up. */
 export const MAX_REJOINS = 3;
+
+/** Whether the other side hung up (servers without peerEnded: endedBy isn't me). */
+export function peerEnded(st: CallStatus, me: string): boolean {
+  return st.peerEnded ?? (!!st.endedBy && st.endedBy !== me);
+}
 
 export type WatchState = {
   now: number;
@@ -67,7 +72,7 @@ export function decide(s: WatchState): Verdict {
   const fresh = st !== null && s.statusAt !== null && s.now - s.statusAt < 10_000;
 
   // Hung up or declined, from either app: always final.
-  if (st && st.endedBy && st.endedBy !== s.me) {
+  if (st && peerEnded(st, s.me)) {
     return { action: 'end', reason: st.peerSeenMsAgo === null ? `${st.peer} didn't answer` : `${st.peer} hung up` };
   }
 

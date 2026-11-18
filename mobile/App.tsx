@@ -33,7 +33,7 @@ import { connected, finish, onHangUp, ring, setupCallKit, startOutgoing, stopRin
 import { POLL_MS } from './src/config';
 import { lastMedia, rememberMedia } from './src/media';
 import { Settings, cleanUrl, loadSettings, saveSettings } from './src/settings';
-import { NOTIFIED_NO_ANSWER_MS, NO_ANSWER_MS, decide } from './src/watchdog';
+import { NOTIFIED_NO_ANSWER_MS, NO_ANSWER_MS, decide, peerEnded } from './src/watchdog';
 import { NTFY_APP_STORE_URL, dismissForThisLaunch, dismissedThisLaunch, isSetUp, markSetUp } from './src/notifications';
 
 /**
@@ -307,7 +307,14 @@ function HomeScreen(props: {
         api
           .callStatus(inv.meetingId)
           .then(st => {
-            if (st.endedBy) stopRinging(id);
+            if (st.answeredOn) {
+              // Answered on another of your devices: not a missed call.
+              stopWatching();
+              stopRinging(id, true);
+              setStatus(`Answered on your ${st.answeredOn}`);
+            } else if (st.endedBy) {
+              stopRinging(id);
+            }
           })
           .catch(() => {});
       }, POLL_MS);
@@ -605,7 +612,7 @@ function RingingScreen(props: {
       try {
         const st = await api.heartbeat(meeting.meetingId);
         if (done.current) return;
-        if (st.endedBy && st.endedBy !== meeting.displayName) {
+        if (peerEnded(st, meeting.displayName)) {
           stop(`${meeting.peer} didn't answer`);
         } else if (st.peerSeenMsAgo !== null) {
           done.current = true;

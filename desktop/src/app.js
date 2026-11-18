@@ -1,7 +1,7 @@
 import { h, render } from "preact";
 import { useCallback, useEffect, useRef, useState } from "preact/hooks";
 import htm from "htm";
-import { decide, NO_ANSWER_MS, NOTIFIED_NO_ANSWER_MS } from "./watchdog.js";
+import { decide, peerEnded, NO_ANSWER_MS, NOTIFIED_NO_ANSWER_MS } from "./watchdog.js";
 
 const html = htm.bind(h);
 const { invoke } = window.__TAURI__.core;
@@ -413,6 +413,10 @@ function Dashboard({ me, api, jitsiBase, jitsiSignedIn, onJitsiBase, onSettings 
     setActive(c);
   };
 
+  /** Hangs up or declines; the device says which side, in a call to yourself. */
+  const hangUpCall = (meetingId) =>
+    api(`${callPath(meetingId)}/hangup`, { method: "POST", body: JSON.stringify({ device: DEVICE }) }).catch(() => {});
+
   /** From the call: this device is in it (`joined`: in the Jitsi room). */
   const heartbeat = (meetingId) =>
     api(`${callPath(meetingId)}/heartbeat`, {
@@ -429,7 +433,7 @@ function Dashboard({ me, api, jitsiBase, jitsiSignedIn, onJitsiBase, onSettings 
     if (!c) return;
     setCall(null);
     watch.current = null;
-    if (hangUp) api(`${callPath(c.meetingId)}/hangup`, { method: "POST" }).catch(() => {});
+    if (hangUp) hangUpCall(c.meetingId);
     if (closeWindow) invoke("close_meeting", { room: c.meetingId }).catch(() => {});
     setNotice(why);
   };
@@ -466,7 +470,7 @@ function Dashboard({ me, api, jitsiBase, jitsiSignedIn, onJitsiBase, onSettings 
       }
       if (activeRef.current !== c) return; // ended meanwhile
       if (c.phase === "ringing") {
-        if (st && st.endedBy && st.endedBy !== me.username) {
+        if (st && peerEnded(st, me.username)) {
           endCall(`${c.peer} didn't answer`, { closeWindow: false });
         } else if (st && st.peerSeenMsAgo !== null) {
           await startInCall(c);
@@ -534,9 +538,11 @@ function Dashboard({ me, api, jitsiBase, jitsiSignedIn, onJitsiBase, onSettings 
 
   // An incoming call stops ringing when the caller gives up (GET, which
   // isn't answering), or after INCOMING_RING_MS.
-  const dropInvite = (inv, why) => {
+  // `hangUp: false` when another of your devices answered it: the call goes
+  // on there.
+  const dropInvite = (inv, why, { hangUp = true } = {}) => {
     setInvites((queue) => queue.filter((x) => x !== inv));
-    api(`${callPath(inv.meetingId)}/hangup`, { method: "POST" }).catch(() => {});
+    if (hangUp) hangUpCall(inv.meetingId);
     if (why) setNotice(why);
   };
   useInterval(async () => {
@@ -545,7 +551,12 @@ function Dashboard({ me, api, jitsiBase, jitsiSignedIn, onJitsiBase, onSettings 
     let gone = Date.now() - inv.receivedAt > INCOMING_RING_MS;
     if (!gone) {
       try {
-        gone = !!(await api(callPath(inv.meetingId))).endedBy;
+        const st = await api(`${callPath(inv.meetingId)}?device=${encodeURIComponent(DEVICE)}`);
+        if (st.answeredOn) {
+          if (invitesRef.current[0] === inv) dropInvite(inv, `Answered on your ${st.answeredOn}`, { hangUp: false });
+          return;
+        }
+        gone = !!st.endedBy;
       } catch (_) {}
     }
     if (gone && invitesRef.current[0] === inv) dropInvite(inv, `Missed a call from ${inv.from}`);
@@ -582,7 +593,7 @@ function Dashboard({ me, api, jitsiBase, jitsiSignedIn, onJitsiBase, onSettings 
     try {
       const { meetingId, jitsiUrl, notified } = await api("/call", {
         method: "POST",
-        body: JSON.stringify({ to: who, jitsiUrl: server.trim() || me.defaultJitsiUrl }),
+        body: JSON.stringify({ to: who, jitsiUrl: server.trim() || me.defaultJitsiUrl, device: DEVICE, name: DEVICE_NAME }),
       });
       setCall({ meetingId, peer: who, jitsiUrl, outgoing: true, phase: "ringing", startedAt: Date.now(), notified: !!notified });
       // Remember the server as typed for next time; blank stays blank (the

@@ -24,6 +24,14 @@ test('the other side hanging up ends it, even mid-conversation', () => {
   expect(decide(base({ status: { peer: 'bob', peerSeenMsAgo: 1000, endedBy: 'bob' } }))).toEqual({ action: 'end', reason: 'bob hung up' });
 });
 
+test('calling yourself: the other device hanging up ends it (endedBy is you either way)', () => {
+  const me = { me: 'alice' };
+  const st = (peerEnded: boolean) => ({ peer: 'alice', peerSeenMsAgo: 1000, endedBy: 'alice', peerEnded });
+  expect(decide(base({ ...me, status: st(true) }))).toEqual({ action: 'end', reason: 'alice hung up' });
+  // This device hung up itself: nothing more to do here.
+  expect(decide(base({ ...me, status: st(false) }))).toEqual({ action: 'none' });
+});
+
 test('a decline (or the ring running out) ends it', () => {
   const v = decide(base({ remotes: 0, peerSince: null, status: { peer: 'bob', peerSeenMsAgo: null, endedBy: 'bob' } }));
   expect(v).toEqual({ action: 'end', reason: "bob didn't answer" });

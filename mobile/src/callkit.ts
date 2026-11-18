@@ -103,12 +103,17 @@ export function ring(from: string, onAnswer: (callUUID: string) => void, onDecli
   return id;
 }
 
-/** The caller gave up while it rang: stop ringing, as when it rings out. */
-export function stopRinging(id: string) {
+/**
+ * Stops ringing. The caller gave up: as when it rings out (onDecline).
+ * `elsewhere`: another of your devices answered, so no onDecline (which
+ * would hang up the call that's going on there).
+ */
+export function stopRinging(id: string, elsewhere = false) {
   const r = takeRinging(id);
   if (!r) return;
-  RNCallKeep.reportEndCallWithUUID(id, CONSTANTS.END_CALL_REASONS.REMOTE_ENDED);
-  r.onDecline();
+  const { END_CALL_REASONS } = CONSTANTS;
+  RNCallKeep.reportEndCallWithUUID(id, elsewhere ? END_CALL_REASONS.ANSWERED_ELSEWHERE : END_CALL_REASONS.REMOTE_ENDED);
+  if (!elsewhere) r.onDecline();
 }
 
 /** Reports a call Quple is placing to `to`; returns its id. */

@@ -38,6 +38,21 @@ other and agree on a meeting room.
    "bob didn't answer"; so it does after 60 s with no answer at all (the
    callee's app wasn't open). An invite for a call that's already been
    hung up isn't delivered.
+
+   **Every device rings.** Each of the callee's devices (iPhone, Mac) gets
+   the invite on its own `/poll?device=…`, once; one that opens within the
+   invite's 2 minutes still rings. The first to answer has the call, and
+   the others, checking `GET /calls/{id}?device=…` while they ring, see
+   `answeredOn` ("Answered on your iPhone") and stop without hanging up.
+   Declining on any of them declines the call.
+
+   **Calling yourself** (typing your own username), from your Mac to your
+   iPhone or back: your other devices ring, not the one calling. The
+   server tells the two sides apart by device rather than username (the
+   caller's device is the caller's side; the other device that answers is
+   the callee's), so apps send their device with `/call`, `/hangup` and
+   `GET /calls/{id}`, and `peerEnded` says which side hung up (`endedBy`
+   is you either way). Such a call can't be moved.
 6. **Ending.** Jitsi doesn't end a call when the other side leaves, so the
    iPhone app's call screen does, on any Jitsi server
    ([`mobile/src/watchdog.ts`](mobile/src/watchdog.ts)). Every 3 s it sends
@@ -327,12 +342,12 @@ caller's username is the token's `preferred_username`.
 |-------------------------------|-----------------------------------------|---------|
 | `GET /me`                     | —                                       | `{"username":"alice","defaultJitsiUrl":"https://meet.jit.si"}`, plus `"ntfyServer"` and `"ntfyTopic"` (yours, made on first use) when the server sends call notifications |
 | `POST /register`              | —                                       | `{"ok":true}` — marks you online |
-| `POST /call`                  | `{"to":"bob","jitsiUrl":"https://meet.jit.si"}` | `{"meetingId":…,"jitsiUrl":…,"notified":false}` — `jitsiUrl` is optional (default `DEFAULT_JITSI`); `notified` when the callee's app was closed and they got a notification instead |
-| `GET /poll[?device=…]`        | —                                       | `{"invites":[{"from":…,"meetingId":…,"jitsiUrl":…,"createdAt":…}]}` — also marks you online, and clears delivered invites. With `device`, also `"calls":[{"meetingId":…,"peer":…,"jitsiUrl":…,"device":"iPhone"}]`: your answered calls on your other devices, to move |
-| `GET /calls/{meetingId}`            | —                                 | the same as a heartbeat's answer, without counting as one: for a phone that's ringing (has the caller given up?) |
-| `POST /calls/{meetingId}/heartbeat` | `{"device":"…","name":"iPhone","joined":true}` (optional) | `{"peer":"bob","peerSeenMsAgo":1200,"endedBy":""}` — sent every few seconds from a call screen; `peerSeenMsAgo` is `null` until the other side's call screen opens (not answered; the caller's call screen is up from the start), `endedBy` is who hung up. With a device, also `movedTo`/`movedJoined` when the call is now on another of your devices (see "Moving a call"). Also marks you online. Only the call's two parties: 403 otherwise, 404 for unknown or long-idle calls |
-| `POST /calls/{meetingId}/move`      | `{"device":"…","name":"Mac"}`     | `{"meetingId":…,"peer":"bob","jitsiUrl":…,"device":"Mac"}` — puts your side of the call on this device; your other one leaves once this one's heartbeat says `joined`. 409 if it's ended |
-| `POST /calls/{meetingId}/hangup`    | —                                 | `{"ok":true}` — ends the call for both sides (hanging up, declining, or the ring running out) |
+| `POST /call`                  | `{"to":"bob","jitsiUrl":"https://meet.jit.si","device":"…","name":"Mac"}` | `{"meetingId":…,"jitsiUrl":…,"notified":false}` — every device of `to` rings. `jitsiUrl` is optional (default `DEFAULT_JITSI`); `device` and `name` too, except to call yourself (`to` is you: your other devices ring; 400 without a device); `notified` when the callee's app was closed and they got a notification instead |
+| `GET /poll[?device=…]`        | —                                       | `{"invites":[{"from":…,"meetingId":…,"jitsiUrl":…,"createdAt":…}]}` — also marks you online. Each invite comes once per device (apps without `device` share one), until it's answered, hung up or 2 minutes old. With `device`, also `"calls":[{"meetingId":…,"peer":…,"jitsiUrl":…,"device":"iPhone"}]`: your answered calls on your other devices, to move |
+| `GET /calls/{meetingId}[?device=…]` | —                                 | the same as a heartbeat's answer, without counting as one: for a device that's ringing (has the caller given up?). With `device`, also `answeredOn` (a device name) once another of your devices has answered: stop ringing, don't hang up |
+| `POST /calls/{meetingId}/heartbeat` | `{"device":"…","name":"iPhone","joined":true}` (optional) | `{"peer":"bob","peerSeenMsAgo":1200,"endedBy":"","peerEnded":false}` — sent every few seconds from a call screen; `peerSeenMsAgo` is `null` until the other side's call screen opens (not answered; the caller's call screen is up from the start), `endedBy` is who hung up and `peerEnded` whether it was the other side (what tells them apart in a call to yourself). With a device, also `movedTo`/`movedJoined` when the call is now on another of your devices (see "Moving a call"). Also marks you online. Only the call's two parties: 403 otherwise, 404 for unknown or long-idle calls |
+| `POST /calls/{meetingId}/move`      | `{"device":"…","name":"Mac"}`     | `{"meetingId":…,"peer":"bob","jitsiUrl":…,"device":"Mac"}` — puts your side of the call on this device; your other one leaves once this one's heartbeat says `joined`. 409 if it's ended, or a call to yourself |
+| `POST /calls/{meetingId}/hangup`    | `{"device":"…"}` (optional; needed in a call to yourself) | `{"ok":true}` — ends the call for both sides (hanging up, declining, or the ring running out) |
 | `GET /contacts`               | —                                       | `{"contacts":[{"username":…,"online":true}]}` |
 | `POST /contacts`              | `{"username":"bob"}`                    | the added contact |
 | `DELETE /contacts/{username}` | —                                       | `{"ok":true}` |

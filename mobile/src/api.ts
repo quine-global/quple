@@ -23,6 +23,13 @@ export type CallStatus = {
   /** Who hung up or declined; "" while the call is on. */
   endedBy: string;
   /**
+   * The other side hung up or declined. In a call to yourself, endedBy is
+   * you either way, so this says which side it was.
+   */
+  peerEnded?: boolean;
+  /** Ringing here, but another of your devices answered (its name): stop ringing, don't hang up. */
+  answeredOn?: string;
+  /**
    * Set when the call has moved to another of your devices (its name): mute
    * now, and leave the room (without hanging up) once `movedJoined`.
    */
@@ -60,12 +67,15 @@ export class Api {
     const r = await this.request<{ invites?: Invite[]; calls?: ActiveCall[] }>(`/poll?device=${encodeURIComponent(device)}`);
     return { invites: r.invites ?? [], calls: r.calls ?? [] };
   }
-  call(to: string, jitsiUrl?: string) {
-    return this.request<Call>('/call', { method: 'POST', body: JSON.stringify({ to, jitsiUrl }) });
+  /** Calls `to` (all their devices ring), or yourself (your other devices ring). */
+  async call(to: string, jitsiUrl?: string) {
+    const body = JSON.stringify({ to, jitsiUrl, device: await deviceId(), name: DEVICE_NAME });
+    return this.request<Call>('/call', { method: 'POST', body });
   }
   /** The call, without counting as a heartbeat (answering): for a phone that's ringing. */
-  callStatus(meetingId: string) {
-    return this.request<CallStatus>(`/calls/${encodeURIComponent(meetingId)}`);
+  async callStatus(meetingId: string) {
+    const device = encodeURIComponent(await deviceId());
+    return this.request<CallStatus>(`/calls/${encodeURIComponent(meetingId)}?device=${device}`);
   }
   /** From a call screen: this device is in the call (`joined`: in the Jitsi room). */
   async heartbeat(meetingId: string, joined = false) {
@@ -77,8 +87,10 @@ export class Api {
     const body = JSON.stringify({ device: await deviceId(), name: DEVICE_NAME });
     return this.request<ActiveCall>(`/calls/${encodeURIComponent(meetingId)}/move`, { method: 'POST', body });
   }
-  hangUp(meetingId: string) {
-    return this.request<{ ok: boolean }>(`/calls/${encodeURIComponent(meetingId)}/hangup`, { method: 'POST' });
+  /** Hangs up or declines; the device says which side, in a call to yourself. */
+  async hangUp(meetingId: string) {
+    const body = JSON.stringify({ device: await deviceId() });
+    return this.request<{ ok: boolean }>(`/calls/${encodeURIComponent(meetingId)}/hangup`, { method: 'POST', body });
   }
   contacts() {
     return this.request<{ contacts: Contact[] }>('/contacts').then(r => r.contacts ?? []);
