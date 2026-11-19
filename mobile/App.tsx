@@ -270,6 +270,10 @@ function HomeScreen(props: {
     refreshContacts();
   }, [api, fail, refreshContacts]);
 
+  // Calls ringing here: how to stop one, by meeting, when we call its
+  // caller back and the server answers it for us (a crossed call).
+  const ringingHere = useRef(new Map<string, () => void>());
+
   const incoming = useCallback(
     (inv: Invite) => {
       if (seen.current.has(inv.meetingId)) return;
@@ -281,6 +285,7 @@ function HomeScreen(props: {
       const stopWatching = () => {
         if (watch) clearInterval(watch);
         watch = null;
+        ringingHere.current.delete(inv.meetingId);
       };
       const id = ring(
         inv.from,
@@ -303,6 +308,10 @@ function HomeScreen(props: {
           api.hangUp(inv.meetingId).catch(() => {});
         },
       );
+      ringingHere.current.set(inv.meetingId, () => {
+        stopWatching();
+        stopRinging(id, true);
+      });
       watch = setInterval(() => {
         api
           .callStatus(inv.meetingId)
@@ -371,6 +380,13 @@ function HomeScreen(props: {
       // emptied: blank means the signaling server's default (ours).
       await props.onRemember(server ?? '');
       setStatus('');
+      if (res.joined) {
+        // They were calling us at the same time: the server answered their
+        // call for us (README "Crossed calls"). Stop it ringing here, as
+        // answered, so it never counts as a decline.
+        seen.current.add(res.meetingId);
+        ringingHere.current.get(res.meetingId)?.();
+      }
       onJoin({
         jitsiUrl: res.jitsiUrl,
         meetingId: res.meetingId,
@@ -378,7 +394,7 @@ function HomeScreen(props: {
         callUUID,
         outgoing: true,
         peer: to,
-        answered: false,
+        answered: !!res.joined,
         notified: res.notified,
       });
     } catch (e) {

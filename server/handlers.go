@@ -185,7 +185,13 @@ func (a *App) handleCall(w http.ResponseWriter, r *http.Request, me string) {
 	}
 
 	a.store.Touch(me)
-	inv := a.store.PlaceCall(to, body.Device, body.Name, Invite{From: me, MeetingID: newMeetingID(), JitsiURL: jitsiURL})
+	inv, joined := a.store.PlaceCall(to, body.Device, body.Name, Invite{From: me, MeetingID: newMeetingID(), JitsiURL: jitsiURL})
+	if joined {
+		// They were already calling us: that's their call, answered. Go
+		// straight into it (on their Jitsi server); nobody rings.
+		writeJSON(w, http.StatusOK, map[string]any{"meetingId": inv.MeetingID, "jitsiUrl": inv.JitsiURL, "notified": false, "joined": true})
+		return
+	}
 	// Their app is closed (it hasn't polled lately): a notification, so they
 	// can open it and answer. The caller's app then rings for longer.
 	notified := false

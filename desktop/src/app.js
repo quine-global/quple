@@ -604,11 +604,19 @@ function Dashboard({ me, api, jitsiBase, jitsiSignedIn, onJitsiBase, onSettings 
     }
     setNotice("");
     try {
-      const { meetingId, jitsiUrl, notified } = await api("/call", {
+      const { meetingId, jitsiUrl, notified, joined } = await api("/call", {
         method: "POST",
         body: JSON.stringify({ to: who, jitsiUrl: server.trim() || me.defaultJitsiUrl, device: DEVICE, name: DEVICE_NAME }),
       });
-      setCall({ meetingId, peer: who, jitsiUrl, outgoing: true, phase: "ringing", startedAt: Date.now(), notified: !!notified });
+      if (joined) {
+        // They were calling us at the same time: the server answered their
+        // call for us (README "Crossed calls"). Stop it ringing here (it's
+        // answered, not declined) and go straight in.
+        setInvites((queue) => queue.filter((x) => x.meetingId !== meetingId));
+        await startInCall({ meetingId, peer: who, jitsiUrl, outgoing: false });
+      } else {
+        setCall({ meetingId, peer: who, jitsiUrl, outgoing: true, phase: "ringing", startedAt: Date.now(), notified: !!notified });
+      }
       // Remember the server as typed for next time; blank stays blank (the
       // server's default), as on the iPhone.
       const typed = server.trim();

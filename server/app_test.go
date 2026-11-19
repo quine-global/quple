@@ -412,3 +412,51 @@ func TestHangUpTellsThePeer(t *testing.T) {
 		t.Fatalf("bob after declining: %v", st)
 	}
 }
+
+func TestCrossedCallsShareOneRoom(t *testing.T) {
+	srv := newTestApp(t)
+	_, first := do(t, srv, "alice", "POST", "/call", `{"to":"bob","jitsiUrl":"https://jitsi.example.org","device":"alice-mac","name":"Mac"}`)
+	id := first["meetingId"].(string)
+	// Bob's Mac has started ringing; his iPhone hasn't polled yet.
+	do(t, srv, "bob", "GET", "/poll?device=bob-mac", "")
+
+	// Bob calls Alice before answering: he's in her call, not a new one.
+	_, second := do(t, srv, "bob", "POST", "/call", `{"to":"alice","device":"bob-mac","name":"Mac"}`)
+	if second["joined"] != true || second["meetingId"] != id || second["jitsiUrl"] != "https://jitsi.example.org" {
+		t.Fatalf("crossed call: %v", second)
+	}
+	// Nobody rings for it: not Alice, nor Bob's iPhone.
+	if _, poll := do(t, srv, "alice", "GET", "/poll?device=alice-phone", ""); len(poll["invites"].([]any)) != 0 {
+		t.Fatalf("alice rings: %v", poll)
+	}
+	if _, poll := do(t, srv, "bob", "GET", "/poll?device=bob-phone", ""); len(poll["invites"].([]any)) != 0 {
+		t.Fatalf("bob's iPhone rings: %v", poll)
+	}
+	// Alice's ringing screen sees the answer; Bob's other device hears
+	// where it was answered; Bob's own device is the callee's side.
+	if _, st := do(t, srv, "alice", "POST", "/calls/"+id+"/heartbeat", `{"device":"alice-mac","name":"Mac"}`); st["peerSeenMsAgo"] == nil {
+		t.Fatalf("alice doesn't see the answer: %v", st)
+	}
+	if _, st := do(t, srv, "bob", "GET", "/calls/"+id+"?device=bob-phone", ""); st["answeredOn"] != "Mac" {
+		t.Fatalf("bob's iPhone: %v", st)
+	}
+	if _, st := do(t, srv, "bob", "POST", "/calls/"+id+"/heartbeat", `{"device":"bob-mac","name":"Mac"}`); st["peer"] != "alice" || st["movedTo"] != nil {
+		t.Fatalf("bob in the call: %v", st)
+	}
+}
+
+func TestCallingBackAfterAHangUpRings(t *testing.T) {
+	srv := newTestApp(t)
+	_, first := do(t, srv, "alice", "POST", "/call", `{"to":"bob","device":"alice-mac","name":"Mac"}`)
+	id := first["meetingId"].(string)
+	do(t, srv, "alice", "POST", "/calls/"+id+"/hangup", `{"device":"alice-mac"}`)
+
+	// Alice gave up: Bob calling back is a new call, and it rings.
+	_, second := do(t, srv, "bob", "POST", "/call", `{"to":"alice","device":"bob-mac","name":"Mac"}`)
+	if second["joined"] != nil || second["meetingId"] == id {
+		t.Fatalf("joined a hung-up call: %v", second)
+	}
+	if _, poll := do(t, srv, "alice", "GET", "/poll?device=alice-phone", ""); len(poll["invites"].([]any)) != 1 {
+		t.Fatalf("alice doesn't ring: %v", poll)
+	}
+}

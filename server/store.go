@@ -200,15 +200,31 @@ func (s *Store) IsOnline(username string) bool {
 // PlaceCall queues inv for every device of to, stamping its creation time,
 // and starts the call's state with the caller already in it, on device
 // (its name: deviceName) when the app said which it is.
-func (s *Store) PlaceCall(to, device, deviceName string, inv Invite) Invite {
+//
+// Calls that cross (to is already ringing the caller, who calls them back
+// before answering) don't make a second room: the caller answers to's call
+// instead, on device, and joined is true. The returned invite is then to's
+// (its meeting and Jitsi server). Only for apps that say which device they
+// are, and not for calls to yourself.
+func (s *Store) PlaceCall(to, device, deviceName string, inv Invite) (_ Invite, joined bool) {
 	now := time.Now()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.sweepCalls(now)
+	if device != "" && to != inv.From {
+		if theirs := s.ringingFrom(to, inv.From, now); theirs != nil {
+			c := s.calls[theirs.MeetingID]
+			c.sides[calleeSide].seen = now
+			c.sides[calleeSide].holder = &holder{device: device, name: deviceName, seen: now}
+			c.touched = now
+			s.lastSeen[inv.From] = now
+			return *theirs, true
+		}
+	}
 	inv.CreatedAt = now
 	inv.delivered = map[string]bool{}
 	inv.callerDevice = device
-	s.mu.Lock()
-	defer s.mu.Unlock()
 	s.invites[to] = append(s.invites[to], &inv)
-	s.sweepCalls(now)
 	c := &call{
 		sides:    [2]side{{user: inv.From, seen: now}, {user: to}},
 		jitsiURL: inv.JitsiURL,
@@ -219,7 +235,24 @@ func (s *Store) PlaceCall(to, device, deviceName string, inv Invite) Invite {
 		c.sides[callerSide].holder = &holder{device: device, name: deviceName, seen: now}
 	}
 	s.calls[inv.MeetingID] = c
-	return inv
+	return inv, false
+}
+
+// ringingFrom returns the newest call from `from` still ringing for me (not
+// too old, hung up or answered), or nil. Callers hold mu.
+func (s *Store) ringingFrom(from, me string, now time.Time) *Invite {
+	cutoff := now.Add(-inviteTTL)
+	queue := s.invites[me]
+	for i := len(queue) - 1; i >= 0; i-- {
+		inv := queue[i]
+		if inv.From != from || !inv.CreatedAt.After(cutoff) {
+			continue
+		}
+		if c, ok := s.calls[inv.MeetingID]; ok && c.endedBy == "" && c.sides[calleeSide].seen.IsZero() {
+			return inv
+		}
+	}
+	return nil
 }
 
 // sweepCalls forgets calls nobody has touched in callIdleTTL. Callers hold mu.

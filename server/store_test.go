@@ -8,7 +8,7 @@ import (
 func TestPlaceCallRingsEachDeviceOnce(t *testing.T) {
 	s := NewStore()
 
-	inv := s.PlaceCall("bob", "alice-mac", "Mac", Invite{From: "alice", MeetingID: newMeetingID()})
+	inv, _ := s.PlaceCall("bob", "alice-mac", "Mac", Invite{From: "alice", MeetingID: newMeetingID()})
 	if inv.CreatedAt.IsZero() {
 		t.Fatal("CreatedAt not set")
 	}
@@ -52,7 +52,7 @@ func TestPresence(t *testing.T) {
 
 func TestIdleCallsAreForgotten(t *testing.T) {
 	s := NewStore()
-	inv := s.PlaceCall("bob", "", "", Invite{From: "alice", MeetingID: newMeetingID()})
+	inv, _ := s.PlaceCall("bob", "", "", Invite{From: "alice", MeetingID: newMeetingID()})
 	s.calls[inv.MeetingID].touched = time.Now().Add(-callIdleTTL - time.Second)
 	if _, err := s.CallHeartbeat(inv.MeetingID, "alice", Heartbeat{}); err != errNoCall {
 		t.Fatalf("heartbeat on an idle call: %v, want errNoCall", err)

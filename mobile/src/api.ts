@@ -13,8 +13,12 @@ export type Me = {
 };
 export type Contact = { username: string; online: boolean };
 export type Invite = { from: string; meetingId: string; jitsiUrl: string; createdAt: string };
-/** `notified`: the callee's app was closed, so they got a notification instead. */
-export type Call = { meetingId: string; jitsiUrl: string; notified?: boolean };
+/**
+ * `notified`: the callee's app was closed, so they got a notification instead.
+ * `joined`: they were calling you at the same time, so this is their call,
+ * already answered: go straight in.
+ */
+export type Call = { meetingId: string; jitsiUrl: string; notified?: boolean; joined?: boolean };
 /** A call as one side sees it (the server's /calls/{id}/heartbeat). */
 export type CallStatus = {
   peer: string;

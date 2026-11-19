@@ -46,6 +46,15 @@ other and agree on a meeting room.
    `answeredOn` ("Answered on your iPhone") and stop without hanging up.
    Declining on any of them declines the call.
 
+   **Crossed calls.** If you call someone who is already ringing you (you
+   both pressed call at once, or you call back instead of answering), the
+   server doesn't open a second room: your `/call` answers their call on
+   your device and returns its meeting and Jitsi server with
+   `"joined": true`, and your app goes straight into it. Their ringing
+   screen sees the answer as usual, and your other devices stop ringing
+   ("Answered on your Mac"). A call that was hung up or has run out
+   doesn't count: calling back then rings as a new call.
+
    **Calling yourself** (typing your own username), from your Mac to your
    iPhone or back: your other devices ring, not the one calling. The
    server tells the two sides apart by device rather than username (the
@@ -375,7 +384,7 @@ caller's username is the token's `preferred_username`.
 |-------------------------------|-----------------------------------------|---------|
 | `GET /me`                     | —                                       | `{"username":"alice","defaultJitsiUrl":"https://meet.jit.si"}`, plus `"ntfyServer"` and `"ntfyTopic"` (yours, made on first use) when the server sends call notifications |
 | `POST /register`              | —                                       | `{"ok":true}` — marks you online |
-| `POST /call`                  | `{"to":"bob","jitsiUrl":"https://meet.jit.si","device":"…","name":"Mac"}` | `{"meetingId":…,"jitsiUrl":…,"notified":false}` — every device of `to` rings. `jitsiUrl` is optional (default `DEFAULT_JITSI`); `device` and `name` too, except to call yourself (`to` is you: your other devices ring; 400 without a device); `notified` when the callee's app was closed and they got a notification instead |
+| `POST /call`                  | `{"to":"bob","jitsiUrl":"https://meet.jit.si","device":"…","name":"Mac"}` | `{"meetingId":…,"jitsiUrl":…,"notified":false}` — every device of `to` rings. `jitsiUrl` is optional (default `DEFAULT_JITSI`); `device` and `name` too, except to call yourself (`to` is you: your other devices ring; 400 without a device); `notified` when the callee's app was closed and they got a notification instead; `"joined": true` when `to` was already ringing you (a crossed call): that's their call, answered on your device, and nobody rings |
 | `GET /poll[?device=…]`        | —                                       | `{"invites":[{"from":…,"meetingId":…,"jitsiUrl":…,"createdAt":…}]}` — also marks you online. Each invite comes once per device (apps without `device` share one), until it's answered, hung up or 2 minutes old. With `device`, also `"calls":[{"meetingId":…,"peer":…,"jitsiUrl":…,"device":"iPhone"}]`: your answered calls on your other devices, to move |
 | `GET /calls/{meetingId}[?device=…]` | —                                 | the same as a heartbeat's answer, without counting as one: for a device that's ringing (has the caller given up?). With `device`, also `answeredOn` (a device name) once another of your devices has answered: stop ringing, don't hang up |
 | `POST /calls/{meetingId}/heartbeat` | `{"device":"…","name":"iPhone","joined":true}` (optional) | `{"peer":"bob","peerSeenMsAgo":1200,"endedBy":"","peerEnded":false}` — sent every few seconds from a call screen; `peerSeenMsAgo` is `null` until the other side's call screen opens (not answered; the caller's call screen is up from the start), `endedBy` is who hung up and `peerEnded` whether it was the other side (what tells them apart in a call to yourself). With a device, also `movedTo`/`movedJoined` when the call is now on another of your devices (see "Moving a call"). Also marks you online. Only the call's two parties: 403 otherwise, 404 for unknown or long-idle calls |
